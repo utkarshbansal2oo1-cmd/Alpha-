@@ -1,0 +1,8 @@
+{
+  "taxonomy_type": "role",
+  "version": "1.0.0",
+  "updated_at": "2026-07-01",
+  "entries": [
+    { "id": "dup.same_id", "canonical": "Role A", "aliases": [], "expansions": [], "status": "active", "created_at": "2026-07-01", "updated_at": "2026-07-01" }
+  ]
+}

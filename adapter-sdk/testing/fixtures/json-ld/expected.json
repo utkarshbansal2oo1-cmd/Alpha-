@@ -1,0 +1,10 @@
+{
+  "adapterUsed": "json-ld-person",
+  "fields": {
+    "name": "Priya Verma",
+    "role": "Staff Engineer",
+    "current_company": "Nimbus Cloud",
+    "location": "Bangalore",
+    "skills": ["Kubernetes", "Go"]
+  }
+}

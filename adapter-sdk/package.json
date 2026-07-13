@@ -1,0 +1,14 @@
+{
+  "name": "alphasource-adapter-sdk",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Pluggable Adapter SDK for AlphaSource candidate capture -- detect/extract/normalize/validate lifecycle, adapter registry, testing framework, and performance benchmarking. See docs/ADAPTER_SDK.md.",
+  "scripts": {
+    "build-manifest": "node build-manifest.js",
+    "test": "node testing/run-tests.js",
+    "benchmark": "node testing/benchmark.js"
+  },
+  "devDependencies": {
+    "jsdom": "^24.0.0"
+  }
+}

@@ -1,0 +1,11 @@
+
+Benchmark (300 iterations per fixture):
+
+adapter               detect avg   detect p95   extract avg   extract p95   status
+career-page-listing   0.822ms      2.067ms      1.009ms       2.593ms       OK
+csv-row               0.006ms      0.003ms      0.029ms       0.039ms       OK
+generic-html          0.112ms      0.292ms      1.144ms       3.959ms       OK
+json-ld-person        0.146ms      0.395ms      0.189ms       0.533ms       OK
+resume-text           0.005ms      0.004ms      0.042ms       0.084ms       OK
+
+Budget: detect p95 <= 5ms, extract p95 <= 15ms

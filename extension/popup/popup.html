@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>AlphaSource</title>
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+  <div class="popup">
+    <header class="popup__header">
+      <span class="popup__logo">AlphaSource</span>
+      <span class="popup__badge" id="status-badge">Checking page…</span>
+    </header>
+
+    <main class="popup__body" id="body">
+      <p class="popup__page-url" id="page-url"></p>
+
+      <div id="state-loading" class="popup__state">
+        <div class="spinner"></div>
+        <p>Scanning this page…</p>
+      </div>
+
+      <div id="state-no-candidate" class="popup__state hidden">
+        <p class="popup__empty-title">No candidate detected</p>
+        <p class="popup__empty-sub">
+          This page doesn't look like a candidate profile. Open a profile,
+          portfolio, or resume page and click the extension icon again.
+        </p>
+      </div>
+
+      <div id="state-detected" class="popup__state hidden">
+        <div class="detected-card">
+          <p class="detected-card__name" id="candidate-name"></p>
+          <p class="detected-card__headline" id="candidate-headline"></p>
+          <p class="detected-card__meta" id="candidate-meta"></p>
+        </div>
+        <button id="capture-button" class="button button--primary">
+          Add to AlphaSource
+        </button>
+      </div>
+
+      <div id="state-uploading" class="popup__state hidden">
+        <div class="spinner"></div>
+        <p>Adding candidate…</p>
+      </div>
+
+      <div id="state-success" class="popup__state hidden">
+        <p class="success-check">✓</p>
+        <p class="popup__success-title" id="success-title">Added to AlphaSource</p>
+        <p class="popup__success-sub" id="success-sub"></p>
+      </div>
+
+      <div id="state-error" class="popup__state hidden">
+        <p class="popup__error-title">Couldn't add this candidate</p>
+        <p class="popup__error-sub" id="error-message"></p>
+        <button id="retry-button" class="button button--ghost">Try again</button>
+      </div>
+    </main>
+
+    <footer class="popup__footer">
+      <a href="#" id="debug-link" title="Show adapter detection details on the page">Debug this page</a>
+      <a href="#" id="options-link">Settings</a>
+    </footer>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

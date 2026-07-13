@@ -1,0 +1,30 @@
+# Python / backend
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+.venv/
+venv/
+backend/.env
+
+# Node / frontend & marketing
+node_modules/
+dist/
+.vite/
+frontend/.env
+marketing/.env
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.swp
+
+# Logs
+*.log
+npm-debug.log*
+
+# Env files in general (examples are explicitly allowed below)
+.env
+.env.local
+.env.*.local
+!.env.example

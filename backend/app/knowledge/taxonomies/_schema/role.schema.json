@@ -1,0 +1,40 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "AlphaSource role taxonomy",
+  "type": "object",
+  "required": ["taxonomy_type", "version", "updated_at", "entries"],
+  "properties": {
+    "taxonomy_type": { "const": "role" },
+    "version": { "type": "string", "minLength": 1 },
+    "updated_at": { "type": "string", "format": "date" },
+    "entries": { "type": "array", "items": { "$ref": "#/definitions/entry" } }
+  },
+  "additionalProperties": false,
+  
+  "definitions": {
+    "expansion": {
+      "type": "object",
+      "required": ["target_id", "weight"],
+      "properties": {
+        "target_id": { "type": "string", "minLength": 1 },
+        "weight": { "type": "number", "minimum": 0.0, "maximum": 1.0 },
+        "notes": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "entry": {
+      "type": "object",
+      "required": ["id", "canonical", "created_at", "updated_at"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "canonical": { "type": "string", "minLength": 1 },
+        "aliases": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+        "expansions": { "type": "array", "items": { "$ref": "#/definitions/expansion" } },
+        "status": { "type": "string", "enum": ["active", "deprecated"] },
+        "created_at": { "type": "string", "format": "date" },
+        "updated_at": { "type": "string", "format": "date" }
+      },
+      "additionalProperties": false
+    }
+  }
+}

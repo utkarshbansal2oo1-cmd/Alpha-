@@ -1,0 +1,92 @@
+[
+  {
+    "id": "cand-001",
+    "name": "Asha Rao",
+    "role": "Senior Product Engineer",
+    "experience": 8.5,
+    "skills": ["AWS", "Kubernetes", "Python", "React"],
+    "location": "Bangalore",
+    "current_company": "Acme Cloud",
+    "source": "seed_data"
+  },
+  {
+    "id": "cand-002",
+    "name": "Rahul Mehta",
+    "role": "Product Engineer",
+    "experience": 6.0,
+    "skills": ["AWS", "Docker", "Node.js"],
+    "location": "Bangalore",
+    "current_company": "Foo Systems",
+    "source": "seed_data"
+  },
+  {
+    "id": "cand-003",
+    "name": "Priya Singh",
+    "role": "Staff Backend Engineer",
+    "experience": 9.0,
+    "skills": ["Kubernetes", "EC2", "Go", "Terraform"],
+    "location": "Hyderabad",
+    "current_company": "Bar Labs",
+    "source": "seed_data"
+  },
+  {
+    "id": "cand-004",
+    "name": "Karthik Iyer",
+    "role": "Backend Engineer",
+    "experience": 4.0,
+    "skills": ["Python", "PostgreSQL"],
+    "location": "Bangalore",
+    "current_company": "Acme Cloud",
+    "source": "seed_data"
+  },
+  {
+    "id": "cand-005",
+    "name": "Neha Kulkarni",
+    "role": "Principal Platform Engineer",
+    "experience": 11.0,
+    "skills": ["EKS", "IAM", "Java", "System Design"],
+    "location": "Bangalore",
+    "current_company": "Acme Cloud",
+    "source": "seed_data"
+  },
+  {
+    "id": "cand-006",
+    "name": "Farah Sheikh",
+    "role": "Software Engineer",
+    "experience": 3.0,
+    "skills": ["Lambda", "S3", "CloudFormation"],
+    "location": "Pune",
+    "current_company": "Delta Corp",
+    "source": "seed_data"
+  },
+  {
+    "id": "cand-007",
+    "name": "Vikram Nair",
+    "role": "Data Scientist",
+    "experience": 5.0,
+    "skills": ["Python", "Machine Learning", "SQL"],
+    "location": "Bangalore",
+    "current_company": "Insight Analytics",
+    "source": "seed_data"
+  },
+  {
+    "id": "cand-008",
+    "name": "Meera Pillai",
+    "role": "API Engineer",
+    "experience": 7.0,
+    "skills": ["AWS", "Java", "Kafka"],
+    "location": "Chennai",
+    "current_company": "Foo Systems",
+    "source": "seed_data"
+  },
+  {
+    "id": "cand-009",
+    "name": "Ritika Malhotra",
+    "role": "Enterprise Sales Manager",
+    "experience": 8.0,
+    "skills": ["Cybersecurity", "Enterprise Sales", "SaaS Sales", "Salesforce", "Cyber Expertise", "Sales Person"],
+    "location": "Bangalore",
+    "current_company": "SecureGuard Technologies",
+    "source": "seed_data"
+  }
+]

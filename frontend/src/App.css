@@ -1,0 +1,4 @@
+/* Sprint 22: dead file -- superseded entirely by src/index.css and
+   Tailwind utility classes. Not imported anywhere. Left empty rather
+   than deleted because this sandbox cannot unlink pre-existing files;
+   kept out of the bundle since nothing references it. */

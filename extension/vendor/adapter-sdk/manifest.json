@@ -1,0 +1,16 @@
+{
+  "generatedAt": "2026-07-09T07:05:24.758Z",
+  "description": "Load order for the Adapter SDK's core + adapter files. Consumers (e.g. the browser extension) should inject these files, in this exact order, before running the extraction pipeline.",
+  "files": [
+    "core/source-input.js",
+    "core/candidate-schema.js",
+    "core/base-adapter.js",
+    "core/registry.js",
+    "adapters/_sdk-import.js",
+    "adapters/career-page-listing.js",
+    "adapters/csv-row.js",
+    "adapters/generic-html.js",
+    "adapters/json-ld.js",
+    "adapters/resume-text.js"
+  ]
+}

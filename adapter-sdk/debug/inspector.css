@@ -1,0 +1,54 @@
+/* Visual debug mode overlay styles -- injected alongside inspector.js.
+   Scoped under #alphasource-debug-panel / .alphasource-debug-highlight so
+   it can't collide with the host page's own styles. */
+#alphasource-debug-panel {
+  position: fixed;
+  bottom: 16px;
+  right: 16px;
+  width: 340px;
+  max-height: 70vh;
+  overflow-y: auto;
+  background: #0b0e14;
+  color: #f2f4f8;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 10px;
+  font: 12px/1.4 -apple-system, "Segoe UI", sans-serif;
+  z-index: 2147483647;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5);
+}
+#alphasource-debug-panel .asdbg-header {
+  padding: 10px 12px;
+  font-weight: 600;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+#alphasource-debug-panel .asdbg-close {
+  cursor: pointer;
+  color: #9aa3b2;
+  font-weight: normal;
+}
+#alphasource-debug-panel .asdbg-body { padding: 10px 12px; }
+#alphasource-debug-panel table { width: 100%; border-collapse: collapse; margin-bottom: 10px; }
+#alphasource-debug-panel th, #alphasource-debug-panel td {
+  text-align: left;
+  padding: 3px 4px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+#alphasource-debug-panel tr.asdbg-winner { color: #4fd1ff; font-weight: 600; }
+#alphasource-debug-panel tr.asdbg-error { color: #ff6b6b; }
+#alphasource-debug-panel .asdbg-fields {
+  background: rgba(255, 255, 255, 0.04);
+  border-radius: 6px;
+  padding: 8px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+}
+.alphasource-debug-highlight {
+  outline: 2px solid #4fd1ff !important;
+  outline-offset: 2px !important;
+  background: rgba(79, 209, 255, 0.08) !important;
+}

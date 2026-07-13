@@ -1,0 +1,45 @@
+{
+  "taxonomy_type": "industry",
+  "version": "2026.07.1",
+  "updated_at": "2026-07-08",
+  "entries": [
+    {
+      "id": "industry.fintech",
+      "canonical": "FinTech",
+      "aliases": ["Financial Technology", "Fin-Tech"],
+      "expansions": [
+        { "target_id": "industry.banking", "weight": 0.6, "notes": "adjacent, overlapping regulatory domain" }
+      ],
+      "status": "active",
+      "created_at": "2026-07-01",
+      "updated_at": "2026-07-01"
+    },
+    {
+      "id": "industry.banking",
+      "canonical": "Banking",
+      "aliases": ["BFSI"],
+      "expansions": [],
+      "status": "active",
+      "created_at": "2026-07-01",
+      "updated_at": "2026-07-01"
+    },
+    {
+      "id": "industry.ecommerce",
+      "canonical": "E-commerce",
+      "aliases": ["Ecommerce", "E commerce"],
+      "expansions": [],
+      "status": "active",
+      "created_at": "2026-07-01",
+      "updated_at": "2026-07-01"
+    },
+    {
+      "id": "industry.healthcare",
+      "canonical": "Healthcare",
+      "aliases": ["HealthTech"],
+      "expansions": [],
+      "status": "active",
+      "created_at": "2026-07-01",
+      "updated_at": "2026-07-01"
+    }
+  ]
+}

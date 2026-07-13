@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>AlphaSource — Settings</title>
+  <style>
+    body {
+      font-family: -apple-system, "Segoe UI", Inter, sans-serif;
+      background: #0b0e14;
+      color: #f2f4f8;
+      max-width: 420px;
+      margin: 40px auto;
+      padding: 0 20px;
+    }
+    h1 { font-size: 16px; }
+    label { display: block; font-size: 12px; color: #9aa3b2; margin: 16px 0 6px; }
+    input {
+      width: 100%;
+      padding: 9px 10px;
+      border-radius: 6px;
+      border: 1px solid rgba(255,255,255,0.12);
+      background: #12151d;
+      color: #f2f4f8;
+      font-size: 13px;
+    }
+    button {
+      margin-top: 18px;
+      padding: 9px 16px;
+      border-radius: 6px;
+      border: none;
+      background: #4fd1ff;
+      color: #061018;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    p.hint { font-size: 11px; color: #9aa3b2; }
+    p.status { font-size: 12px; color: #38d39f; height: 16px; }
+  </style>
+</head>
+<body>
+  <h1>AlphaSource extension settings</h1>
+
+  <label for="backend-url">Backend URL</label>
+  <input id="backend-url" type="url" placeholder="https://your-alphasource-backend.example.com" />
+  <p class="hint">Where captured candidates are sent (POST /candidate/import).</p>
+
+  <label for="captured-by">Your recruiter identity</label>
+  <input id="captured-by" type="text" placeholder="you@company.com" />
+  <p class="hint">Self-reported label attached to candidates you capture -- not an authenticated login, no password is ever stored by this extension.</p>
+
+  <button id="save">Save settings</button>
+  <p class="status" id="status"></p>
+
+  <script src="options.js"></script>
+</body>
+</html>

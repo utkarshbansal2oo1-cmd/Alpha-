@@ -1,0 +1,9 @@
+{
+  "adapterUsed": "career-page-listing",
+  "multi": true,
+  "fields": [
+    { "name": "Aisha Khan", "role": "VP Engineering" },
+    { "name": "Vikram Rao", "role": "Head of Product" },
+    { "name": "Neha Joshi", "role": "Director of Design" }
+  ]
+}

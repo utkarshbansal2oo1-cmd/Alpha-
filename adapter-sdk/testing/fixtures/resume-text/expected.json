@@ -1,0 +1,8 @@
+{
+  "adapterUsed": "resume-text",
+  "fields": {
+    "name": "Ananya Gupta",
+    "skills": ["Python", "AWS", "Kubernetes"],
+    "experience_years": 6
+  }
+}

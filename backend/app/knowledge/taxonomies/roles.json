@@ -1,0 +1,59 @@
+{
+  "taxonomy_type": "role",
+  "version": "2026.07.1",
+  "updated_at": "2026-07-08",
+  "entries": [
+    {
+      "id": "role.product_engineer",
+      "canonical": "Product Engineer",
+      "aliases": ["PE", "Prod Engineer"],
+      "expansions": [
+        { "target_id": "role.backend_engineer", "weight": 0.8, "notes": "significant overlap in day-to-day responsibilities" },
+        { "target_id": "role.platform_engineer", "weight": 0.7, "notes": "" },
+        { "target_id": "role.software_engineer", "weight": 0.6, "notes": "broader umbrella term" },
+        { "target_id": "role.api_engineer", "weight": 0.65, "notes": "" }
+      ],
+      "status": "active",
+      "created_at": "2026-07-01",
+      "updated_at": "2026-07-08"
+    },
+    {
+      "id": "role.backend_engineer",
+      "canonical": "Backend Engineer",
+      "aliases": ["Backend Developer"],
+      "expansions": [
+        { "target_id": "role.software_engineer", "weight": 0.6, "notes": "broader umbrella term" }
+      ],
+      "status": "active",
+      "created_at": "2026-07-01",
+      "updated_at": "2026-07-01"
+    },
+    {
+      "id": "role.platform_engineer",
+      "canonical": "Platform Engineer",
+      "aliases": ["Platform Developer"],
+      "expansions": [],
+      "status": "active",
+      "created_at": "2026-07-01",
+      "updated_at": "2026-07-01"
+    },
+    {
+      "id": "role.software_engineer",
+      "canonical": "Software Engineer",
+      "aliases": ["SWE", "SDE", "Software Developer"],
+      "expansions": [],
+      "status": "active",
+      "created_at": "2026-07-01",
+      "updated_at": "2026-07-01"
+    },
+    {
+      "id": "role.api_engineer",
+      "canonical": "API Engineer",
+      "aliases": [],
+      "expansions": [],
+      "status": "active",
+      "created_at": "2026-07-01",
+      "updated_at": "2026-07-01"
+    }
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "adapterUsed": "generic-html",
+  "fields": {
+    "name": "Rohan Mehta",
+    "role": "Backend Engineer",
+    "current_company": "Globex",
+    "location": "Pune",
+    "summary": "Senior backend engineer."
+  }
+}

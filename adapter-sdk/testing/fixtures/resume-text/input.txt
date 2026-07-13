@@ -1,0 +1,11 @@
+Ananya Gupta
+ananya.gupta@example.com | +91 9876543210
+
+Summary
+Product engineer with 6 years experience.
+
+Skills
+Python, AWS, Kubernetes
+
+Education
+B.Tech Computer Science, 2016

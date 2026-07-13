@@ -1,0 +1,43 @@
+{
+  "taxonomy_type": "company_category",
+  "version": "2026.07.1",
+  "updated_at": "2026-07-08",
+  "entries": [
+    {
+      "id": "company_category.product",
+      "canonical": "Product Company",
+      "aliases": ["product companies", "product-based"],
+      "expansions": [],
+      "status": "active",
+      "created_at": "2026-07-01",
+      "updated_at": "2026-07-01"
+    },
+    {
+      "id": "company_category.service",
+      "canonical": "Service Company",
+      "aliases": ["service companies", "IT services", "consulting"],
+      "expansions": [],
+      "status": "active",
+      "created_at": "2026-07-01",
+      "updated_at": "2026-07-01"
+    },
+    {
+      "id": "company_category.startup",
+      "canonical": "Startup",
+      "aliases": ["early-stage", "startups"],
+      "expansions": [],
+      "status": "active",
+      "created_at": "2026-07-01",
+      "updated_at": "2026-07-01"
+    },
+    {
+      "id": "company_category.enterprise",
+      "canonical": "Enterprise",
+      "aliases": ["large enterprise", "MNC"],
+      "expansions": [],
+      "status": "active",
+      "created_at": "2026-07-01",
+      "updated_at": "2026-07-01"
+    }
+  ]
+}

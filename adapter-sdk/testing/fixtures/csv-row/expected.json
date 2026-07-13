@@ -1,0 +1,10 @@
+{
+  "adapterUsed": "csv-row",
+  "fields": {
+    "name": "Karan Shah",
+    "role": "DevOps Engineer",
+    "current_company": "Acme",
+    "skills": ["Terraform", "AWS"],
+    "location": "Mumbai"
+  }
+}

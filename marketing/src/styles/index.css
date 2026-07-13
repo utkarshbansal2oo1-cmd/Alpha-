@@ -1,0 +1,90 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Design-system primitives that aren't expressible as pure Tailwind
+   utility classes -- glass planes, cursor-glow variables, and the base
+   page reset. Everything else stays in component classNames per project
+   convention (see frontend/'s Tailwind-only approach). */
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  background-color: #050816;
+  color: #F8FAFC;
+  font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  overflow-x: hidden;
+}
+
+/* Plane 1: ambient section containers */
+.glass-plane-1 {
+  background: rgba(255, 255, 255, 0.02);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+/* Plane 2: cards */
+.glass-plane-2 {
+  background: rgba(255, 255, 255, 0.04);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+/* Plane 3: focal containers (hero card, live demo) */
+.glass-plane-3 {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid transparent;
+  background-image:
+    linear-gradient(rgba(255,255,255,0.06), rgba(255,255,255,0.06)),
+    linear-gradient(135deg, rgba(59,130,246,0.15), rgba(139,92,246,0.15), rgba(34,211,238,0.15));
+  background-origin: border-box;
+  background-clip: padding-box, border-box;
+  box-shadow: 0 0 80px rgba(59, 130, 246, 0.08);
+}
+
+/* Cursor-tracked glow used by FeatureCard / GlassCard hover state.
+   --mx / --my are set via onMouseMove in the component itself. */
+.cursor-glow {
+  position: relative;
+  overflow: hidden;
+}
+.cursor-glow::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(
+    280px circle at var(--mx, 50%) var(--my, 50%),
+    rgba(139, 92, 246, 0.14),
+    transparent 70%
+  );
+  opacity: 0;
+  transition: opacity 200ms ease-out;
+  pointer-events: none;
+}
+.cursor-glow:hover::before {
+  opacity: 1;
+}
+
+.accent-text {
+  background: linear-gradient(135deg, #3B82F6 0%, #8B5CF6 50%, #22D3EE 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+/* Scrollbar: kept minimal/dark, not default browser chrome, to preserve
+   the premium feel all the way to the page edges. */
+::-webkit-scrollbar {
+  width: 10px;
+}
+::-webkit-scrollbar-track {
+  background: #050816;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 999px;
+}

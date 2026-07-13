@@ -1,0 +1,50 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    color-scheme: dark;
+  }
+
+  body {
+    @apply bg-void-950 text-ink-100 antialiased;
+    font-family: "Inter var", Inter, -apple-system, BlinkMacSystemFont, sans-serif;
+  }
+
+  ::selection {
+    @apply bg-accent-500/40 text-white;
+  }
+
+  :focus-visible {
+    outline: 2px solid theme("colors.accent.400");
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
+}
+
+@layer components {
+  .glass-panel {
+    @apply bg-white/[0.04] border border-white/[0.08] backdrop-blur-xl shadow-glass;
+  }
+
+  .glass-input {
+    @apply bg-white/[0.06] border border-white/[0.1] backdrop-blur-xl;
+  }
+
+  .noise-overlay {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.4'/%3E%3C/svg%3E");
+    mix-blend-mode: overlay;
+  }
+}
+
+/* Reduced motion: honor the OS-level preference everywhere Framer Motion
+   and CSS animations are used -- accessibility requirement from the brief. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

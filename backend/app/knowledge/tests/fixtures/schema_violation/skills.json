@@ -1,0 +1,16 @@
+{
+  "taxonomy_type": "skill",
+  "version": "1.0.0",
+  "updated_at": "2026-07-01",
+  "entries": [
+    {
+      "id": "skill.bad",
+      "canonical": "Bad Skill",
+      "aliases": [],
+      "expansions": [ { "target_id": "skill.other", "weight": 5.0, "notes": "weight out of 0-1 range" } ],
+      "status": "active",
+      "created_at": "2026-07-01",
+      "updated_at": "2026-07-01"
+    }
+  ]
+}

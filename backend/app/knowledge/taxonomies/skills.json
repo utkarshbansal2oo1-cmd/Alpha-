@@ -1,0 +1,88 @@
+{
+  "taxonomy_type": "skill",
+  "version": "2026.07.1",
+  "updated_at": "2026-07-08",
+  "entries": [
+    {
+      "id": "skill.aws",
+      "canonical": "AWS",
+      "aliases": ["Amazon Web Services", "amazon-web-services"],
+      "expansions": [
+        { "target_id": "skill.ec2", "weight": 0.9, "notes": "core AWS compute service" },
+        { "target_id": "skill.iam", "weight": 0.7, "notes": "core AWS access-control service" },
+        { "target_id": "skill.lambda", "weight": 0.8, "notes": "common serverless usage of AWS" },
+        { "target_id": "skill.s3", "weight": 0.9, "notes": "core AWS storage service" },
+        { "target_id": "skill.eks", "weight": 0.75, "notes": "AWS's managed Kubernetes offering" },
+        { "target_id": "skill.cloudformation", "weight": 0.6, "notes": "AWS IaC tool" }
+      ],
+      "status": "active",
+      "created_at": "2026-07-01",
+      "updated_at": "2026-07-08"
+    },
+    {
+      "id": "skill.ec2",
+      "canonical": "EC2",
+      "aliases": ["Elastic Compute Cloud"],
+      "expansions": [],
+      "status": "active",
+      "created_at": "2026-07-01",
+      "updated_at": "2026-07-01"
+    },
+    {
+      "id": "skill.iam",
+      "canonical": "IAM",
+      "aliases": ["Identity and Access Management"],
+      "expansions": [],
+      "status": "active",
+      "created_at": "2026-07-01",
+      "updated_at": "2026-07-01"
+    },
+    {
+      "id": "skill.lambda",
+      "canonical": "Lambda",
+      "aliases": ["AWS Lambda"],
+      "expansions": [],
+      "status": "active",
+      "created_at": "2026-07-01",
+      "updated_at": "2026-07-01"
+    },
+    {
+      "id": "skill.s3",
+      "canonical": "S3",
+      "aliases": ["Simple Storage Service"],
+      "expansions": [],
+      "status": "active",
+      "created_at": "2026-07-01",
+      "updated_at": "2026-07-01"
+    },
+    {
+      "id": "skill.eks",
+      "canonical": "EKS",
+      "aliases": ["Elastic Kubernetes Service"],
+      "expansions": [
+        { "target_id": "skill.kubernetes", "weight": 0.85, "notes": "EKS is AWS's managed Kubernetes" }
+      ],
+      "status": "active",
+      "created_at": "2026-07-01",
+      "updated_at": "2026-07-01"
+    },
+    {
+      "id": "skill.cloudformation",
+      "canonical": "CloudFormation",
+      "aliases": ["AWS CloudFormation"],
+      "expansions": [],
+      "status": "active",
+      "created_at": "2026-07-01",
+      "updated_at": "2026-07-01"
+    },
+    {
+      "id": "skill.kubernetes",
+      "canonical": "Kubernetes",
+      "aliases": ["K8s", "k8s"],
+      "expansions": [],
+      "status": "active",
+      "created_at": "2026-07-01",
+      "updated_at": "2026-07-01"
+    }
+  ]
+}

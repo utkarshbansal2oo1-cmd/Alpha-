@@ -35,8 +35,22 @@ class Settings(BaseSettings):
     def cors_origins_list(self) -> list[str]:
         return [o.strip() for o in self.CORS_ORIGINS.split(",") if o.strip()]
 
-    # --- AI (not used yet — foundation only) ---
+    # --- AI ---
     GEMINI_API_KEY: str = ""
+
+    # Sprint 29: Query Understanding's LLM provider is now configurable.
+    # Gemini's free tier caps at 20 generate_content calls/day, which was
+    # getting exhausted from live recruiter testing alone (see
+    # docs/TECH_DEBT.md / Sprint 29 notes) -- Groq's free tier gives 1,000
+    # requests/day on Llama 3.3 70B at zero cost, so it's the default.
+    # GEMINI_API_KEY stays required for GitHub's semantic embedding match
+    # (app/integrations/github/intelligence/semantic_matcher.py), which is
+    # unrelated to Query Understanding and unaffected by this setting --
+    # Groq has no embeddings endpoint, so Gemini remains in the system
+    # regardless of QUERY_PROVIDER.
+    GROQ_API_KEY: str = ""
+    QUERY_PROVIDER: str = "groq"
+    FALLBACK_PROVIDER: str = "gemini"
 
 
 settings = Settings()

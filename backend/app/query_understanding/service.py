@@ -17,7 +17,7 @@ later) can substitute one without changing this class.
 """
 from __future__ import annotations
 
-from app.query_understanding.gemini_client import GeminiClient, LLMClient
+from app.query_understanding.gemini_client import LLMClient
 from app.query_understanding.models import (
     CanonicalJobRequirement,
     LLMClientError,
@@ -26,6 +26,7 @@ from app.query_understanding.models import (
 )
 from app.query_understanding.parser import JSONResponseParser
 from app.query_understanding.prompt_builder import PromptBuilder
+from app.query_understanding.provider import get_default_llm_client
 from app.query_understanding.validator import QueryValidator
 
 
@@ -37,7 +38,12 @@ class QueryUnderstandingService:
         response_parser: JSONResponseParser | None = None,
         validator: QueryValidator | None = None,
     ):
-        self._llm_client = llm_client or GeminiClient()
+        # Sprint 29: was `GeminiClient()` unconditionally -- now resolved via
+        # settings.QUERY_PROVIDER/FALLBACK_PROVIDER (see provider.py) so the
+        # provider is a config change, not a code change. An explicitly
+        # passed llm_client (every existing test uses FakeLLMClient this
+        # way) always wins, unchanged.
+        self._llm_client = llm_client or get_default_llm_client()
         self._prompt_builder = prompt_builder or PromptBuilder()
         self._response_parser = response_parser or JSONResponseParser()
         self._validator = validator or QueryValidator()

@@ -169,6 +169,21 @@ def smart_search(
     plan = planner.build_plan(requirement)
     candidates = repository.search(plan)
 
+    # Sprint 26: repository.search() is a keyword/role pre-filter -- useful
+    # for the Decision Engine's "did we already have an obvious match"
+    # signal, but it must not be the only thing standing between a
+    # candidate and the recruiter's screen. Merge in the rest of the
+    # internal pool (deduped by id) so the Matching Engine scores, and the
+    # Ranking Engine ranks, every candidate on file -- not just the subset
+    # whose role/skills happened to literally match a search term. The
+    # system's job is to surface everyone with an honest confidence bar;
+    # deciding who's "good enough" is the recruiter's call, not this
+    # endpoint's. (Explicit product requirement: a TA searching for one
+    # role should see every plausible profile, ranked, not a silently
+    # pre-filtered shortlist of one.)
+    seen_ids = {c.id for c in candidates}
+    candidates = candidates + [c for c in repository.all() if c.id not in seen_ids]
+
     # Module 1/2: every candidate is scored and ranked -- no exact-match
     # or first-match shortcut -- before the Decision Engine ever looks at
     # the result quality.

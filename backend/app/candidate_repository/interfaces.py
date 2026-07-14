@@ -73,3 +73,18 @@ class CandidateRepository(ABC):
         which need a SearchPlan.
         """
         raise NotImplementedError
+
+    @abstractmethod
+    def all(self) -> list[Candidate]:
+        """Returns every Candidate on file, unfiltered. Read-only, like
+        search()/get_by_id().
+
+        Sprint 26 addition: formalizes a method that already existed on
+        InMemoryCandidateRepository and was referenced in this file's own
+        docstrings, but was never declared on the interface itself. Needed
+        so app/routers/discovery_search.py can merge the full candidate
+        pool into scoring -- search()'s keyword/role filter stays intact
+        and well-tested, but it must not be the sole gate on which
+        candidates a recruiter ever sees scored and ranked.
+        """
+        raise NotImplementedError

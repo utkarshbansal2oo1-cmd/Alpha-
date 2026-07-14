@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
 from app.routers import (
+    auth,
     candidate_import,
     candidate_intelligence,
     candidates,
@@ -14,6 +15,7 @@ from app.routers import (
     github_integration,
     greenhouse_integration,
     health,
+    integrations_status,
     search,
     search_pipeline,
     sources,
@@ -69,6 +71,21 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.on_event("startup")
+def _bootstrap_admin_recruiter() -> None:
+    """Sprint 30: creates the one admin recruiter account from
+    ADMIN_USERNAME/ADMIN_PASSWORD if REQUIRE_AUTH is on and no recruiter
+    exists yet. Guarded by REQUIRE_AUTH (default False) so this never
+    touches the database -- and never requires one to be reachable -- in
+    local dev or any test run that doesn't explicitly opt into real auth."""
+    if not settings.REQUIRE_AUTH:
+        return
+    from app.auth.service import AuthService
+
+    AuthService().ensure_admin(settings.ADMIN_USERNAME, settings.ADMIN_PASSWORD)
+
+
+app.include_router(auth.router)            # POST /auth/login
 app.include_router(health.router)          # GET /health -> {"status": "ok"}
 app.include_router(search.router)          # POST /api/v1/search (existing mock pipeline, untouched)
 app.include_router(search_pipeline.router) # POST /api/search (Query Understanding -> Search Planner -> Candidate Repository)
@@ -80,3 +97,4 @@ app.include_router(greenhouse_integration.router)  # /integrations/greenhouse/co
 app.include_router(discovery_search.router)  # POST /api/search/smart (Sprint 18: Autonomous Discovery Engine)
 app.include_router(connector_management.router)  # GET/POST /connectors... (Sprint 20A: Universal Connector Framework)
 app.include_router(github_integration.router)  # POST /integrations/github/configure (Sprint 20B: GitHub Discovery Connector)
+app.include_router(integrations_status.router)  # GET /integrations/status (Sprint 32: connector health)

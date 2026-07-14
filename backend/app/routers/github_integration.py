@@ -1,22 +1,29 @@
-"""GitHub connector configuration endpoint -- Sprint 20B.
+"""POST /integrations/github/configure -- Sprint 20B, PAT verification
+added Sprint 32.
 
-  POST /integrations/github/configure  -- set the Personal Access Token
-                                           (+ base URL override, for
-                                           GitHub Enterprise Server)
+Sprint 32: a submitted PAT is no longer trusted and stored blind. Before
+`config_store.set()` is ever called, this endpoint makes one real call to
+GitHub (`GET /user`, via GitHubClient.get_authenticated_user()) to prove
+the token actually authenticates. A 401 means the token is invalid or
+revoked -- nothing is persisted, and the recruiter/admin gets a clear
+error instead of a search silently skipping GitHub weeks later. On
+success, the token's owner (verified_username) and reported OAuth scopes
+(verified_scopes -- empty for fine-grained PATs, which don't return that
+header) are recorded via config_store.mark_verified().
 
-Registered additively in main.py; nothing here changes /api/search,
-/api/search/smart, /candidate/import, or any other existing route.
-Mirrors app/routers/greenhouse_integration.py's configure endpoint --
-the GitHub connector itself has no bulk sync or push-back (Sprint 20B is
-discovery-only, per the sprint brief), so this router is intentionally
-just the one endpoint.
+`verify` is injected (get_github_verifier) rather than constructing
+GitHubClient inline, so tests can substitute a fake verifier and never
+make a real network call.
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
+from app.auth.dependencies import get_current_recruiter
+from app.integrations.github.client import GitHubAPIError, GitHubClient
 from app.integrations.github.config import GitHubConfig, GitHubConfigStore, get_github_config_store
+from app.models.recruiter import RecruiterRow
 
 router = APIRouter(prefix="/integrations/github", tags=["github"])
 
@@ -31,16 +38,62 @@ class ConfigureRequest(BaseModel):
 class ConfigureResponse(BaseModel):
     configured: bool
     base_url: str
+    verified_username: str | None = None
+    verified_scopes: list[str] | None = None
+
+
+def get_github_verifier():
+    """Returns a callable(config: GitHubConfig) -> tuple[str, list[str]]
+    that makes one real GitHub API call to verify a PAT, raising
+    GitHubAPIError (401 for an invalid/revoked token) if it doesn't
+    authenticate. A plain provider function -- swappable via FastAPI's
+    dependency_overrides in tests, same pattern as every other DI seam
+    in this codebase."""
+
+    def _verify(config: GitHubConfig) -> tuple[str, list[str]]:
+        client = GitHubClient(config)
+        try:
+            profile, scopes = client.get_authenticated_user()
+        finally:
+            client.close()
+        return profile.get("login"), scopes
+
+    return _verify
 
 
 @router.post("/configure", response_model=ConfigureResponse)
 def configure_github(
     payload: ConfigureRequest,
     config_store: GitHubConfigStore = Depends(get_github_config_store),
+    verify: callable = Depends(get_github_verifier),
+    _recruiter: RecruiterRow = Depends(get_current_recruiter),
 ) -> ConfigureResponse:
     config = GitHubConfig(
         personal_access_token=payload.personal_access_token,
         base_url=payload.base_url or GitHubConfig.model_fields["base_url"].default,
     )
+
+    try:
+        username, scopes = verify(config)
+    except GitHubAPIError as exc:
+        if exc.status_code == 401:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid GitHub Personal Access Token -- nothing was saved.",
+            ) from exc
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Could not verify the GitHub token right now: {exc}",
+        ) from exc
+
+    # Only reachable once verification succeeded -- an invalid token is
+    # never persisted (see the 401 branch above).
     config_store.set(config)
-    return ConfigureResponse(configured=True, base_url=config.base_url)
+    config_store.mark_verified(username, scopes)
+
+    return ConfigureResponse(
+        configured=True,
+        base_url=config.base_url,
+        verified_username=username,
+        verified_scopes=scopes or None,
+    )

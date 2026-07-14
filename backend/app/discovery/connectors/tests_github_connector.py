@@ -490,3 +490,42 @@ def test_discover_honors_a_configured_max_search_results_larger_than_default():
     connector.discover(CanonicalJobRequirement(role="Backend Engineer", skills=["Python"]))
 
     assert search_route.calls.last.request.url.params["per_page"] == "50"
+
+
+# --- Sprint 32: runtime 401 marks the credential store invalid --------------
+
+
+@respx.mock
+def test_discover_marks_credential_store_error_on_401():
+    respx.get("https://api.github.com/search/users").mock(
+        return_value=httpx.Response(401, json={"message": "Bad credentials"})
+    )
+
+    store = _configured_store()
+    connector = GitHubDiscoveryConnector(store)
+    requirement = CanonicalJobRequirement(role="Backend Engineer", skills=["Python"])
+
+    results = connector.discover(requirement)
+
+    assert results == []
+    status = store.get_status()
+    assert status["status"] == "invalid"
+    assert "401" in status["last_error"]
+
+
+@respx.mock
+def test_discover_does_not_mark_error_on_non_401_search_failure():
+    respx.get("https://api.github.com/search/users").mock(
+        return_value=httpx.Response(422, json={"message": "Validation failed"})
+    )
+
+    store = _configured_store()
+    connector = GitHubDiscoveryConnector(store)
+    requirement = CanonicalJobRequirement(role="Backend Engineer", skills=["Python"])
+
+    results = connector.discover(requirement)
+
+    assert results == []
+    # A malformed query (422) isn't a token problem -- shouldn't be
+    # reported as one.
+    assert store.get_status()["status"] != "invalid"

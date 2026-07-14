@@ -1,9 +1,4 @@
-"""Integration tests for POST /api/search: the full pipeline exercised
-through the real FastAPI app via TestClient, with only the LLM boundary
-faked out (via FastAPI's dependency_overrides, the same DI seam the route
-itself is built on) -- no real Gemini call is made, but every other
-collaborator (SearchPlanner, KnowledgeEngine, CandidateRepository) is real.
-"""
+"""Integration tests for POST /api/search."""
 from __future__ import annotations
 
 import pytest
@@ -33,9 +28,6 @@ def _clear_overrides():
 client = TestClient(app)
 
 
-# --- happy path --------------------------------------------------------------
-
-
 def test_search_endpoint_full_pipeline_happy_path():
     _override_query_understanding(
         ['{"role": "Product Engineer", "skills": ["AWS"]}']
@@ -51,8 +43,8 @@ def test_search_endpoint_full_pipeline_happy_path():
     assert body["count"] > 0
 
     names = {c["name"] for c in body["candidates"]}
-    assert "Rahul Mehta" in names  # exact role + exact skill match
-    assert "Asha Rao" in names  # exact skill match (AWS)
+    assert "Rahul Mehta" in names
+    assert "Asha Rao" in names
 
 
 def test_search_endpoint_returns_requirement_and_search_plan():
@@ -98,9 +90,6 @@ def test_search_endpoint_no_matches_returns_empty_list_not_error():
     assert body["count"] == 0
 
 
-# --- retry-once behavior surfacing through the API --------------------------
-
-
 def test_search_endpoint_succeeds_after_one_retry():
     fake_llm = _override_query_understanding(
         [
@@ -112,7 +101,7 @@ def test_search_endpoint_succeeds_after_one_retry():
     response = client.post("/api/search", json={"query": "Backend Engineer who knows Kubernetes"})
 
     assert response.status_code == 200
-    assert fake_llm.call_count == 2  # confirms the retry actually happened
+    assert fake_llm.call_count == 2
 
 
 def test_search_endpoint_returns_502_when_llm_fails_twice():
@@ -122,9 +111,6 @@ def test_search_endpoint_returns_502_when_llm_fails_twice():
 
     assert response.status_code == 502
     assert "Query understanding failed" in response.json()["detail"]
-
-
-# --- LLM client-level failure surfacing through the API (code review addition)
 
 
 def test_search_endpoint_returns_502_when_llm_client_itself_fails():
@@ -142,11 +128,8 @@ def test_search_endpoint_returns_502_when_llm_client_itself_fails():
     assert "Query understanding failed" in response.json()["detail"]
 
 
-# --- validation error surfacing ----------------------------------------------
-
-
 def test_search_endpoint_returns_422_for_empty_query():
-    _override_query_understanding([])  # LLM should never even be called
+    _override_query_understanding([])
 
     response = client.post("/api/search", json={"query": "   "})
 
@@ -155,10 +138,7 @@ def test_search_endpoint_returns_422_for_empty_query():
 
 def test_search_endpoint_returns_422_for_missing_query_field():
     response = client.post("/api/search", json={})
-    assert response.status_code == 422  # FastAPI request-body validation, not our handler
-
-
-# --- no ranking / no matching leaking into the API --------------------------
+    assert response.status_code == 422
 
 
 def test_search_endpoint_response_has_no_ranking_fields():
@@ -173,13 +153,10 @@ def test_search_endpoint_response_has_no_ranking_fields():
         assert "reasoning" not in candidate
 
 
-# --- existing /api/v1/search route is untouched ------------------------------
-
-
 def test_old_v1_search_route_still_works_independently():
     response = client.post(
         "/api/v1/search",
         json={"query": "Find Product Engineers with 7+ years in Bangalore, skilled in AWS"},
     )
     assert response.status_code == 200
-    assert "results" in response.json()  # old response shape, unchanged
+    assert "results" in response.json()

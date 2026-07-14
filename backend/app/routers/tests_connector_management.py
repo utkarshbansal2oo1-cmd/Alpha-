@@ -84,9 +84,6 @@ def test_configure_unknown_connector_returns_404():
 
 
 def test_list_connectors_against_real_dynamically_loaded_registry():
-    # No override -- exercises the real module-level registry built by
-    # discover_connectors() at import time, confirming the dynamic
-    # loading path (Module 3) works end-to-end through the API.
     client = TestClient(app)
     resp = client.get("/connectors")
     assert resp.status_code == 200

@@ -46,9 +46,17 @@ router = APIRouter(tags=["search-pipeline"])
 
 
 class SearchQueryRequest(BaseModel):
-    """Request body for POST /api/search."""
+    """Request body for POST /api/search.
+
+    Sprint 31 addition: `page`/`page_size` -- used only by POST
+    /api/search/smart (see discovery_search.py) to paginate through an
+    already fully-computed, fully-ranked candidate pool. They are inert
+    here: this endpoint (the original, untouched Sprint 3 pipeline) never
+    reads them, so old callers that don't send them are unaffected."""
 
     query: str = Field(..., description="Recruiter's free-text hiring requirement")
+    page: int = Field(1, ge=1, description="1-indexed page number (smart search only)")
+    page_size: int = Field(20, ge=1, le=50, description="Candidates per page (smart search only)")
 
 
 class SearchQueryResponse(BaseModel):

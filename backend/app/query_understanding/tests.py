@@ -27,9 +27,6 @@ from app.search_planner.planner import SearchPlanner
 from app.testing.fakes import FakeLLMClient
 
 
-# --- PromptBuilder ---------------------------------------------------------
-
-
 def test_prompt_builder_includes_raw_query():
     prompt = PromptBuilder().build("Product Engineer with 7+ years in Bangalore")
     assert "Product Engineer with 7+ years in Bangalore" in prompt
@@ -49,9 +46,6 @@ def test_prompt_builder_with_retry_hint_includes_it():
     prompt = PromptBuilder().build("Data Scientist with ML and Python", retry_hint="missing 'role'")
     assert "previous response was invalid" in prompt
     assert "missing 'role'" in prompt
-
-
-# --- JSONResponseParser -----------------------------------------------------
 
 
 def test_parser_parses_clean_json():
@@ -83,9 +77,6 @@ def test_parser_raises_on_none():
 def test_parser_raises_on_empty_string():
     with pytest.raises(ResponseParseError):
         JSONResponseParser().parse("   ")
-
-
-# --- QueryValidator ----------------------------------------------------------
 
 
 def test_validator_accepts_well_formed_data():
@@ -137,9 +128,6 @@ def test_validator_strips_whitespace_from_skills():
     assert result.skills == ["AWS"]
 
 
-# --- QueryUnderstandingService: happy path --------------------------------
-
-
 def test_service_happy_path_first_attempt_succeeds():
     fake_llm = FakeLLMClient(['{"role": "Product Engineer", "skills": ["AWS", "Kubernetes"]}'])
     service = QueryUnderstandingService(llm_client=fake_llm)
@@ -149,10 +137,7 @@ def test_service_happy_path_first_attempt_succeeds():
     assert isinstance(result, CanonicalJobRequirement)
     assert result.role == "Product Engineer"
     assert result.skills == ["AWS", "Kubernetes"]
-    assert len(fake_llm.prompts_received) == 1  # no retry needed
-
-
-# --- QueryUnderstandingService: retry-once behavior -----------------------
+    assert len(fake_llm.prompts_received) == 1
 
 
 def test_service_retries_once_on_invalid_json_then_succeeds():
@@ -174,7 +159,7 @@ def test_service_retries_once_on_invalid_json_then_succeeds():
 def test_service_retries_once_on_validation_failure_then_succeeds():
     fake_llm = FakeLLMClient(
         [
-            '{"skills": ["Python"]}',  # missing role -> validation error
+            '{"skills": ["Python"]}',
             '{"role": "Data Scientist", "skills": ["Python", "ML"]}',
         ]
     )
@@ -193,7 +178,6 @@ def test_service_raises_after_second_failure_no_further_retry():
     with pytest.raises(ResponseParseError):
         service.parse("Product Manager from FinTech")
 
-    # exactly two calls total -- confirms no third attempt is made
     assert len(fake_llm.prompts_received) == 2
 
 
@@ -204,12 +188,10 @@ def test_service_rejects_empty_recruiter_query():
     with pytest.raises(QueryValidationError):
         service.parse("   ")
 
-    assert fake_llm.prompts_received == []  # never even calls the LLM
+    assert fake_llm.prompts_received == []
 
 
 def test_service_uses_injected_collaborators_not_hardcoded_ones():
-    # Confirms constructor injection actually wires through to the pipeline
-    # rather than silently constructing its own defaults.
     fake_llm = FakeLLMClient(['{"role": "X", "skills": []}'])
     custom_prompt_builder = PromptBuilder()
     custom_parser = JSONResponseParser()
@@ -227,15 +209,7 @@ def test_service_uses_injected_collaborators_not_hardcoded_ones():
     assert service._validator is custom_validator
 
 
-# --- QueryUnderstandingService: LLM client failure (code review addition) --
-
-
 class _AlwaysFailingLLMClient:
-    """Not a FakeLLMClient variant -- deliberately does not implement the
-    scripted-responses pattern, because this test is about the LLM call
-    itself raising, not about what it returns.
-    """
-
     def generate(self, prompt: str) -> str:
         raise RuntimeError("simulated provider outage")
 
@@ -262,12 +236,7 @@ def test_service_does_not_retry_on_llm_client_failure():
     with pytest.raises(LLMClientError):
         service.parse("Product Engineer with AWS")
 
-    # Only one call: an LLM-call failure is not retried the way a
-    # malformed-response failure is (see service.py's _call_llm docstring).
     assert calls["count"] == 1
-
-
-# --- Integration: Query Understanding -> Search Planner --------------------
 
 
 def test_output_feeds_directly_into_search_planner():

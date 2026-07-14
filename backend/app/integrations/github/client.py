@@ -72,6 +72,25 @@ class GitHubClient:
 
         return response
 
+    def get_authenticated_user(self) -> tuple[dict, list[str]]:
+        """GET /user -- https://docs.github.com/en/rest/users/users#get-the-authenticated-user.
+
+        Sprint 32: the only call in this client made purely to VERIFY a
+        PAT (every other method exists to fetch candidate data). Returns
+        the token owner's profile plus the scopes GitHub reports for it
+        via the `X-OAuth-Scopes` response header. That header is only
+        set for classic PATs -- fine-grained PATs return no scopes header
+        at all, which is expected (not an error): the caller gets an
+        empty list back rather than this method guessing or failing.
+        Raises GitHubAPIError(401, ...) via `_request` if the token is
+        invalid/revoked -- callers use that to reject configuration
+        before ever persisting the token (see routers/github_integration.py).
+        """
+        response = self._request("GET", "/user")
+        scopes_header = response.headers.get("X-OAuth-Scopes", "")
+        scopes = [s.strip() for s in scopes_header.split(",") if s.strip()]
+        return response.json(), scopes
+
     def search_users(self, query: str, per_page: int = 30) -> list[dict]:
         """GET /search/users -- returns the `items` array from GitHub's
         search response envelope (which also carries total_count and

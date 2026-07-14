@@ -35,6 +35,18 @@ expressions instead of one literal job title. Nothing about the
 orchestrator's decision/import/re-search flow, or any connector's own
 implementation, changes -- see orchestrator.py's own docstring for
 exactly what stays byte-for-byte identical when no translator is used.
+
+Sprint 33 (this change): pagination is no longer "recompute the whole
+pool and slice it" per request (Sprint 31's approach). POST /api/search/
+smart now runs the full pipeline -- Query Understanding through Ranking
+-- exactly ONCE, persists the ranked output as a SearchSession (see
+app/search_sessions/store.py), and returns page 1 plus a `session_id`.
+GET /api/search/session/{session_id} pages through that SAME stored
+output -- no Query Understanding, Search Planner, Discovery, Matching,
+or Ranking re-run, ever, for that search. A second POST is always a new
+search: it runs the full pipeline again and creates an independent,
+unrelated session, exactly matching the product's explicit "search
+again" requirement.
 """
 from __future__ import annotations
 
@@ -43,9 +55,11 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
+from app.auth.dependencies import get_current_recruiter
 from app.candidate_repository.interfaces import CandidateRepository
 from app.candidate_repository.models import Candidate
 from app.candidate_repository.repository import get_candidate_repository
+from app.models.recruiter import RecruiterRow
 from app.discovery.connector_registry import ConnectorRegistry
 from app.discovery.connectors.future_connectors import (
     BrowserExtensionDiscoveryConnector,
@@ -75,6 +89,7 @@ from app.routers.search_pipeline import (
 )
 from app.search_planner.models import CanonicalJobRequirement, SearchPlan
 from app.search_planner.planner import SearchPlanner
+from app.search_sessions.store import SearchSessionNotFoundError, SearchSessionStore
 
 logger = logging.getLogger(__name__)
 
@@ -85,12 +100,28 @@ class SmartSearchResponse(BaseModel):
     """Same shape as search_pipeline.py's SearchQueryResponse, plus the
     `discovery` field (Sprint 18) describing what the Discovery Engine
     did, and `rankings` (Sprint 19): each returned candidate's match
-    result and rank, in the same order as `candidates`."""
+    result and rank, in the same order as `candidates`.
 
+    Sprint 33: `session_id` identifies the persisted SearchSession this
+    response's page came from -- pass it to GET /api/search/session/
+    {session_id} to page through the SAME ranked pool without re-running
+    the pipeline. `has_next`/`has_previous` are provided alongside
+    `page`/`total_pages` so the frontend doesn't need to compute them.
+    This is the exact same response shape returned by both endpoints, so
+    the frontend renders a page identically regardless of which one
+    produced it."""
+
+    session_id: str
     requirement: CanonicalJobRequirement
     search_plan: SearchPlan
     candidates: list[Candidate]
     count: int
+    total_count: int
+    page: int
+    page_size: int
+    total_pages: int
+    has_next: bool
+    has_previous: bool
     discovery: DiscoveryRun
     rankings: list[RankedCandidate]
 
@@ -146,6 +177,40 @@ def get_discovery_orchestrator(
     return DiscoveryOrchestrator(connectors=registry, repository=repository, decision_engine=decision_engine)
 
 
+_search_session_store_instance: SearchSessionStore | None = None
+
+
+def get_search_session_store() -> SearchSessionStore:
+    """Process-wide singleton, same lazy-construction pattern as
+    get_candidate_repository() -- constructing a SearchSessionStore
+    doesn't touch the database until create()/get_page() is actually
+    called, so this is safe to call unconditionally."""
+    global _search_session_store_instance
+    if _search_session_store_instance is None:
+        _search_session_store_instance = SearchSessionStore()
+    return _search_session_store_instance
+
+
+def _candidates_for_rankings(
+    rankings: list[RankedCandidate], repository: CandidateRepository
+) -> tuple[list[Candidate], list[RankedCandidate]]:
+    """Re-fetches each ranked candidate_id from the repository, in rank
+    order. A candidate that no longer exists (unlikely, but the
+    repository is the sole source of truth, not this session's stored
+    ids) is skipped rather than raising -- its ranking entry is dropped
+    alongside it so `candidates` and `rankings` stay 1:1, same invariant
+    discovery_search.py has always maintained."""
+    candidates: list[Candidate] = []
+    surviving_rankings: list[RankedCandidate] = []
+    for ranked in rankings:
+        candidate = repository.get_by_id(ranked.candidate_id)
+        if candidate is None:
+            continue
+        candidates.append(candidate)
+        surviving_rankings.append(ranked)
+    return candidates, surviving_rankings
+
+
 @router.post("/api/search/smart", response_model=SmartSearchResponse)
 def smart_search(
     payload: SearchQueryRequest,
@@ -156,6 +221,8 @@ def smart_search(
     matching_engine: MatchingEngine = Depends(get_matching_engine),
     ranking_engine: RankingEngine = Depends(get_ranking_engine),
     query_translator: ConnectorQueryTranslator = Depends(get_query_translator),
+    session_store: SearchSessionStore = Depends(get_search_session_store),
+    _recruiter: RecruiterRow = Depends(get_current_recruiter),  # Sprint 30: no-op unless REQUIRE_AUTH is on
 ) -> SmartSearchResponse:
     try:
         requirement = query_service.parse(payload.query)
@@ -205,13 +272,82 @@ def smart_search(
         matches = matching_engine.score_all(candidates, requirement, plan, raw_query=payload.query)
 
     rankings = ranking_engine.rank(candidates, matches)
-    candidates = ranking_engine.rank_candidates_by_id(rankings, candidates)
+
+    # Sprint 33: this is the ONLY place the full pipeline's ranked output
+    # is computed. Persist it now -- every page of this search, including
+    # this first one, is served by slicing this stored session, never by
+    # recomputing any of the above.
+    session_id = session_store.create(
+        recruiter_id=_recruiter.id,
+        query=payload.query,
+        session_data={
+            "requirement": requirement.model_dump(mode="json"),
+            "search_plan": plan.model_dump(mode="json"),
+            "discovery": discovery_run.model_dump(mode="json"),
+        },
+        rankings=rankings,
+    )
+
+    page = session_store.get_page(session_id, page=payload.page, page_size=payload.page_size)
+    page_candidates, page_rankings = _candidates_for_rankings(page.rankings, repository)
 
     return SmartSearchResponse(
+        session_id=session_id,
         requirement=requirement,
         search_plan=plan,
+        candidates=page_candidates,
+        count=len(page_candidates),
+        total_count=page.total_count,
+        page=page.page,
+        page_size=page.page_size,
+        total_pages=page.total_pages,
+        has_next=page.has_next,
+        has_previous=page.has_previous,
+        discovery=discovery_run,
+        rankings=page_rankings,
+    )
+
+
+@router.get("/api/search/session/{session_id}", response_model=SmartSearchResponse)
+def get_search_session_page(
+    session_id: str,
+    page: int = 1,
+    page_size: int = 20,
+    repository: CandidateRepository = Depends(get_candidate_repository),
+    session_store: SearchSessionStore = Depends(get_search_session_store),
+    _recruiter: RecruiterRow = Depends(get_current_recruiter),
+) -> SmartSearchResponse:
+    """Sprint 33: pages through an already-completed search's stored,
+    ranked output. Deliberately does NOT touch QueryUnderstandingService,
+    SearchPlanner, DiscoveryOrchestrator, MatchingEngine, or RankingEngine
+    -- every one of those ran exactly once, back in the POST that created
+    this session. Only the CandidateRepository is used here, to re-fetch
+    the actual Candidate objects for this page's slice of ranked ids."""
+    if page < 1:
+        raise HTTPException(status_code=422, detail="page must be >= 1")
+    if page_size < 1 or page_size > 50:
+        raise HTTPException(status_code=422, detail="page_size must be between 1 and 50")
+
+    try:
+        session_page = session_store.get_page(session_id, page=page, page_size=page_size)
+    except SearchSessionNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+
+    candidates, rankings = _candidates_for_rankings(session_page.rankings, repository)
+    session_data = session_page.session_data
+
+    return SmartSearchResponse(
+        session_id=session_page.session_id,
+        requirement=CanonicalJobRequirement.model_validate(session_data["requirement"]),
+        search_plan=SearchPlan.model_validate(session_data["search_plan"]),
         candidates=candidates,
         count=len(candidates),
-        discovery=discovery_run,
+        total_count=session_page.total_count,
+        page=session_page.page,
+        page_size=session_page.page_size,
+        total_pages=session_page.total_pages,
+        has_next=session_page.has_next,
+        has_previous=session_page.has_previous,
+        discovery=DiscoveryRun.model_validate(session_data["discovery"]),
         rankings=rankings,
     )

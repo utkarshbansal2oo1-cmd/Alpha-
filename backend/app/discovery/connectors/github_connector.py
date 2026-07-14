@@ -56,6 +56,14 @@ cap now lives on GitHubIntelligenceConfig.max_search_results, so it can be
 raised (or lowered) per deployment/config without touching this file. The
 default (10) is unchanged, so every existing caller keeps its current
 behavior.
+
+Sprint 32 addition: a 401 from GitHub's search API during discover() now
+also marks the credential store's status as "invalid" via
+config_store.mark_error() -- a token that passed verification at
+configure-time can still go bad later (revoked, expired, org policy
+change), and this is what lets GET /integrations/status (and, in a
+future sprint, a frontend "Reconnect GitHub" banner) reflect that instead
+of a search silently and permanently falling back to seed data.
 """
 from __future__ import annotations
 
@@ -215,6 +223,20 @@ class GitHubDiscoveryConnector:
                     "github.discover.search_failed",
                     extra={"query": search_query, "error": str(exc)},
                 )
+                if exc.status_code == 401:
+                    # Sprint 32: a token that passed verification at
+                    # configure-time can still go bad later (revoked,
+                    # expired, org policy change). Record that here so
+                    # GET /integrations/status -- and, in a future
+                    # sprint, a frontend "Reconnect GitHub" banner --
+                    # reflects reality instead of a search silently and
+                    # permanently falling back to seed data with no
+                    # visible explanation.
+                    self._config_store.mark_error(
+                        "GitHub authentication failed (401) during search -- "
+                        "the token may have been revoked or expired. Reconfigure it via "
+                        "POST /integrations/github/configure."
+                    )
                 return []
 
             users_found = len(users)

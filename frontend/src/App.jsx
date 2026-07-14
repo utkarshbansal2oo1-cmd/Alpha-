@@ -1,7 +1,7 @@
 import { Suspense, lazy, useCallback, useMemo, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { AlertTriangle, RotateCcw } from "lucide-react";
-import { smartSearch, SearchError } from "./api";
+import { getSearchSessionPage, smartSearch, SearchError } from "./api";
 import SearchBar from "./components/SearchBar";
 import DiscoveryTimeline from "./components/DiscoveryTimeline";
 import CandidateGrid from "./components/CandidateGrid";
@@ -39,12 +39,21 @@ export default function App() {
   const [query, setQuery] = useState("");
   const [response, setResponse] = useState(null);
   const [error, setError] = useState(null);
+  // Sprint 31: which page of the already-ranked pool is on screen, and
+  // whether a page turn is in flight. Deliberately a *separate* flag from
+  // `phase` -- turning the page must not replay the "requesting" ->
+  // "discovering" pipeline animation (DiscoveryTimeline), since no new
+  // discovery is happening, just a slice of the same ranked results the
+  // recruiter already saw discovered once.
+  const [pageLoading, setPageLoading] = useState(false);
+  const [pageError, setPageError] = useState(null);
   const searchInputRef = useRef(null);
 
   const runSearch = useCallback(async (submittedQuery) => {
     setQuery(submittedQuery);
     setError(null);
     setResponse(null);
+    setPageError(null);
     setPhase("requesting");
     try {
       const data = await smartSearch(submittedQuery);
@@ -56,11 +65,36 @@ export default function App() {
     }
   }, []);
 
+  const goToPage = useCallback(
+    async (targetPage) => {
+      if (!response || pageLoading) return;
+      if (targetPage < 1 || targetPage > response.total_pages) return;
+      setPageLoading(true);
+      setPageError(null);
+      try {
+        // Sprint 33: pages through the SAME search session the first
+        // response created (response.session_id) -- deliberately NOT
+        // another smartSearch() call, which would re-run Query
+        // Understanding/Search Planner/Discovery/Matching/Ranking and
+        // could even start a brand-new, unrelated session.
+        const data = await getSearchSessionPage(response.session_id, targetPage, response.page_size);
+        setResponse(data);
+      } catch (err) {
+        setPageError(err instanceof SearchError ? err : new SearchError(String(err?.message || err)));
+      } finally {
+        setPageLoading(false);
+      }
+    },
+    [response, pageLoading]
+  );
+
   const reset = useCallback(() => {
     setPhase("idle");
     setQuery("");
     setResponse(null);
     setError(null);
+    setPageError(null);
+    setPageLoading(false);
   }, []);
 
   const activeConnectorNames = useMemo(
@@ -163,16 +197,48 @@ export default function App() {
 
               {phase === "results" && (
                 <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.5 }}>
-                  {response.count > 0 && (
+                  {response.total_count > 0 && (
                     <div className="mb-8 text-center">
                       <p className="text-sm text-ink-500">
-                        {response.count} candidate{response.count === 1 ? "" : "s"} found for "{query}"
+                        {response.total_count} candidate{response.total_count === 1 ? "" : "s"} found for "{query}"
+                        {response.total_pages > 1 && (
+                          <span className="text-ink-600"> · page {response.page} of {response.total_pages}</span>
+                        )}
                       </p>
                     </div>
                   )}
 
-                  {response.count > 0 ? (
-                    <CandidateGrid candidates={response.candidates} rankings={response.rankings} />
+                  {response.total_count > 0 ? (
+                    <>
+                      <CandidateGrid candidates={response.candidates} rankings={response.rankings} />
+
+                      {response.total_pages > 1 && (
+                        <div className="mt-10 flex flex-col items-center gap-3">
+                          {pageError && (
+                            <p className="text-xs text-signal-red">{pageError.message}</p>
+                          )}
+                          <div className="flex items-center gap-3">
+                            <button
+                              onClick={() => goToPage(response.page - 1)}
+                              disabled={response.page <= 1 || pageLoading}
+                              className="rounded-full border border-white/[0.08] bg-white/[0.04] px-4 py-1.5 text-xs font-medium text-ink-300 transition-colors hover:bg-white/[0.08] hover:text-ink-100 disabled:cursor-not-allowed disabled:opacity-40"
+                            >
+                              Previous
+                            </button>
+                            <span className="text-xs text-ink-500">
+                              {pageLoading ? "Loading…" : `Page ${response.page} of ${response.total_pages}`}
+                            </span>
+                            <button
+                              onClick={() => goToPage(response.page + 1)}
+                              disabled={response.page >= response.total_pages || pageLoading}
+                              className="rounded-full border border-white/[0.08] bg-white/[0.04] px-4 py-1.5 text-xs font-medium text-ink-300 transition-colors hover:bg-white/[0.08] hover:text-ink-100 disabled:cursor-not-allowed disabled:opacity-40"
+                            >
+                              Next
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                    </>
                   ) : (
                     <EmptyState discovery={response.discovery} query={query} />
                   )}

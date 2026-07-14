@@ -52,5 +52,53 @@ class Settings(BaseSettings):
     QUERY_PROVIDER: str = "groq"
     FALLBACK_PROVIDER: str = "gemini"
 
+    # Sprint 30: which CandidateRepository implementation
+    # get_candidate_repository() returns. Defaults to "memory" -- the
+    # original in-memory/JSON-seed behavior every existing test and local
+    # dev setup already assumes -- so nothing breaks without a reachable
+    # Postgres instance. Set to "postgres" (and ensure DATABASE_URL points
+    # at a real database with migrations applied) to persist candidates
+    # across restarts/redeploys instead of losing them every time, per the
+    # standing gap this sprint closes.
+    CANDIDATE_REPOSITORY_BACKEND: str = "memory"
+
+    # Sprint 30: minimal recruiter identity. If set, a recruiter account
+    # with this username/password is created automatically on startup
+    # (only when the "postgres" repository backend is active and no
+    # recruiter exists yet) -- see app/auth/bootstrap.py. Deliberately not
+    # a general user-registration flow; this is "just enough" identity for
+    # a small team, not enterprise auth.
+    ADMIN_USERNAME: str = ""
+    ADMIN_PASSWORD: str = ""
+
+    # Sprint 30: how long an issued login session stays valid.
+    SESSION_TTL_HOURS: int = 24 * 7
+
+    # Sprint 30: whether protected endpoints (POST /api/search/smart,
+    # /integrations/*/configure) actually require a valid session token.
+    # Defaults to False so every existing test and local dev setup with no
+    # Postgres configured keeps working exactly as before -- flip to True
+    # only once ADMIN_USERNAME/ADMIN_PASSWORD and a real Postgres
+    # DATABASE_URL are both set, so there's an actual account to log into.
+    REQUIRE_AUTH: bool = False
+
+    # Sprint 32: which backend GitHubConfigStore (and, going forward, any
+    # other connector's credential store) uses to hold secrets. Defaults
+    # to "memory" -- today's exact in-process, wiped-on-restart behavior
+    # -- so local dev/tests with no Postgres configured keep working
+    # unchanged. Set to "postgres" once DATABASE_URL points at a real,
+    # migrated database to persist connector credentials (e.g. the GitHub
+    # PAT) across restarts/redeploys instead of losing them every time.
+    CONNECTOR_CREDENTIALS_BACKEND: str = "memory"
+
+    # Sprint 32: the symmetric key used to encrypt connector secrets
+    # (e.g. the GitHub PAT) before they're written to Postgres -- see
+    # app/credentials/crypto.py. Only required when
+    # CONNECTOR_CREDENTIALS_BACKEND=postgres; generate one with:
+    #   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+    # and set it as a Railway environment variable. Never commit a real
+    # value of this to source control.
+    APP_ENCRYPTION_KEY: str = ""
+
 
 settings = Settings()

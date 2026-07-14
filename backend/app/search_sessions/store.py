@@ -1,0 +1,165 @@
+"""Persistent search sessions -- Sprint 33.
+
+The whole point: POST /api/search/smart runs Query Understanding, Search
+Planner, Discovery (including live connector calls like GitHub),
+Matching, and Ranking exactly ONCE per search, then SearchSessionStore
+persists the ranked output. Every subsequent page (GET /api/search/
+session/{id}) reads that stored output -- none of those six stages ever
+runs again for the same search. A genuinely new search (a new POST) is
+the only thing that runs the pipeline again, and it always creates a
+brand-new, independent session -- this store never merges into or
+extends an existing one (see `create()`'s own docstring).
+
+Deliberately NOT the same class as ConnectorCredentialStore or AuthService
+even though it follows the identical session_factory-injection pattern
+established by both -- sessions are pipeline-output data, not secrets or
+identity, so this has no encryption and no password hashing, just plain
+persisted structured data.
+"""
+from __future__ import annotations
+
+import math
+import uuid
+from dataclasses import dataclass
+from datetime import datetime, timezone
+
+from sqlalchemy import select
+from sqlalchemy.orm import Session, sessionmaker
+
+from app.database import SessionLocal
+from app.matching.models import MatchResult, RankedCandidate
+from app.models.search_session import SearchSessionCandidateRow, SearchSessionRow
+
+
+@dataclass
+class SearchSessionPage:
+    session_id: str
+    query: str
+    session_data: dict
+    total_count: int
+    page: int
+    page_size: int
+    total_pages: int
+    has_next: bool
+    has_previous: bool
+    rankings: list[RankedCandidate]  # already sliced to this page, in rank order
+
+
+class SearchSessionNotFoundError(Exception):
+    """Raised by get_page() when session_id doesn't exist -- e.g. an
+    expired/garbage-collected session (none exist yet -- sessions are
+    never deleted by this sprint) or simply a typo'd/stale id."""
+
+
+class SearchSessionStore:
+    def __init__(self, session_factory: sessionmaker[Session] | None = None):
+        self._session_factory = session_factory or SessionLocal
+
+    def create(
+        self,
+        *,
+        recruiter_id: str | None,
+        query: str,
+        session_data: dict,
+        rankings: list[RankedCandidate],
+    ) -> str:
+        """Persists one full pipeline run's ranked output as a brand-new
+        session -- always an insert, never an update. A recruiter running
+        the "same" search again is, per the product spec, a NEW search:
+        this method has no notion of "the existing session for this
+        query" and never looks one up to reuse."""
+        session_id = str(uuid.uuid4())
+
+        # Defensive dedup by candidate_id -- the Ranking Engine already
+        # guarantees one entry per candidate, but the unique constraint
+        # on (session_id, candidate_id) means a genuine duplicate here
+        # would otherwise surface as an opaque IntegrityError instead of
+        # silently doing the right thing.
+        seen_ids: set[str] = set()
+        deduped_rankings: list[RankedCandidate] = []
+        for ranked in rankings:
+            if ranked.candidate_id in seen_ids:
+                continue
+            seen_ids.add(ranked.candidate_id)
+            deduped_rankings.append(ranked)
+
+        with self._session_factory() as db:
+            db.add(
+                SearchSessionRow(
+                    id=session_id,
+                    recruiter_id=recruiter_id,
+                    query=query,
+                    total_count=len(deduped_rankings),
+                    session_data=session_data,
+                    created_at=datetime.now(timezone.utc),
+                )
+            )
+            for ranked in deduped_rankings:
+                db.add(
+                    SearchSessionCandidateRow(
+                        id=str(uuid.uuid4()),
+                        session_id=session_id,
+                        candidate_id=ranked.candidate_id,
+                        rank=ranked.rank,
+                        overall_score=ranked.match.overall_score,
+                        component_scores=ranked.match.component_scores,
+                        matched_fields=ranked.match.matched_fields,
+                        missing_fields=ranked.match.missing_fields,
+                        reasons=ranked.match.reasons,
+                    )
+                )
+            db.commit()
+
+        return session_id
+
+    def get_page(self, session_id: str, page: int, page_size: int) -> SearchSessionPage:
+        with self._session_factory() as db:
+            session_row = db.get(SearchSessionRow, session_id)
+            if session_row is None:
+                raise SearchSessionNotFoundError(f"No search session found for id {session_id!r}.")
+
+            total_count = session_row.total_count
+            total_pages = max(1, math.ceil(total_count / page_size)) if total_count else 1
+            start = (page - 1) * page_size
+            end = start + page_size
+
+            candidate_rows = (
+                db.execute(
+                    select(SearchSessionCandidateRow)
+                    .where(SearchSessionCandidateRow.session_id == session_id)
+                    .order_by(SearchSessionCandidateRow.rank)
+                    .offset(start)
+                    .limit(page_size)
+                )
+                .scalars()
+                .all()
+            )
+
+            rankings = [
+                RankedCandidate(
+                    candidate_id=row.candidate_id,
+                    rank=row.rank,
+                    match=MatchResult(
+                        candidate_id=row.candidate_id,
+                        overall_score=row.overall_score,
+                        component_scores=row.component_scores,
+                        matched_fields=row.matched_fields,
+                        missing_fields=row.missing_fields,
+                        reasons=row.reasons,
+                    ),
+                )
+                for row in candidate_rows
+            ]
+
+            return SearchSessionPage(
+                session_id=session_id,
+                query=session_row.query,
+                session_data=session_row.session_data,
+                total_count=total_count,
+                page=page,
+                page_size=page_size,
+                total_pages=total_pages,
+                has_next=(start + page_size) < total_count,
+                has_previous=page > 1,
+                rankings=rankings,
+            )

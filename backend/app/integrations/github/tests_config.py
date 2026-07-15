@@ -73,6 +73,46 @@ def test_persistent_mode_survives_new_store_instance_same_credential_backend():
     assert store2.get().personal_access_token == "ghp_persisted"
 
 
+# --- Sprint 37: disconnect ---------------------------------------------
+
+
+def test_clear_resets_memory_mode_to_unconfigured():
+    store = GitHubConfigStore()
+    store.set(GitHubConfig(personal_access_token="abc123"))
+    assert store.is_configured() is True
+
+    store.clear()
+
+    assert store.is_configured() is False
+    with pytest.raises(GitHubConfigError):
+        store.get()
+    assert store.get_status()["configured"] is False
+    assert store.get_status()["status"] == "unconfigured"
+
+
+def test_clear_is_a_noop_when_never_configured():
+    store = GitHubConfigStore()
+    store.clear()  # must not raise
+    assert store.is_configured() is False
+
+
+class _FakeCredentialStoreWithClear(_FakeCredentialStore):
+    def clear_secret(self, provider: str) -> None:
+        self._secrets.pop(provider, None)
+
+
+def test_clear_delegates_to_credential_store_in_persistent_mode():
+    credential_store = _FakeCredentialStoreWithClear()
+    store = GitHubConfigStore(credential_store=credential_store)
+    store.set(GitHubConfig(personal_access_token="ghp_real"))
+    assert store.is_configured() is True
+
+    store.clear()
+
+    assert store.is_configured() is False
+    assert credential_store.get_secret("github") is None
+
+
 def test_memory_mode_and_persistent_mode_are_isolated():
     memory_store = GitHubConfigStore()
     memory_store.set(GitHubConfig(personal_access_token="memory-token"))

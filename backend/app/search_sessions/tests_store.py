@@ -46,6 +46,88 @@ def _make_rankings(n: int) -> list[RankedCandidate]:
     return [_ranked(f"cand-{i}", rank=i + 1, score=100.0 - i) for i in range(n)]
 
 
+# --- Sprint 36: Source Group support (source column, filter, counts) -------
+
+
+def test_create_persists_source_per_candidate(store):
+    session_id = store.create(
+        recruiter_id=None,
+        query="Java Developer",
+        session_data={},
+        rankings=_make_rankings(3),
+        candidate_sources={"cand-0": "github", "cand-1": "seed_data", "cand-2": "github"},
+    )
+    page = store.get_page(session_id, page=1, page_size=10)
+    counts = store.get_source_counts(session_id)
+    assert counts == {"github": 2, "seed_data": 1}
+    assert len(page.rankings) == 3
+
+
+def test_create_without_candidate_sources_leaves_source_none(store):
+    """Backward compatibility: pre-Sprint-36 callers that don't pass
+    candidate_sources still work, rows just get source=None."""
+    session_id = store.create(
+        recruiter_id=None, query="Java Developer", session_data={}, rankings=_make_rankings(2)
+    )
+    counts = store.get_source_counts(session_id)
+    assert counts == {None: 2}
+
+
+def test_get_page_source_filter_restricts_to_one_source_group(store):
+    session_id = store.create(
+        recruiter_id=None,
+        query="Java Developer",
+        session_data={},
+        rankings=_make_rankings(5),
+        candidate_sources={
+            "cand-0": "github",
+            "cand-1": "github",
+            "cand-2": "seed_data",
+            "cand-3": "seed_data",
+            "cand-4": "seed_data",
+        },
+    )
+    github_page = store.get_page(session_id, page=1, page_size=10, source="github")
+    assert github_page.total_count == 2
+    assert {r.candidate_id for r in github_page.rankings} == {"cand-0", "cand-1"}
+    # Global rank numbers are preserved even when filtered to one source.
+    assert [r.rank for r in github_page.rankings] == [1, 2]
+
+    seed_page = store.get_page(session_id, page=1, page_size=10, source="seed_data")
+    assert seed_page.total_count == 3
+    assert {r.candidate_id for r in seed_page.rankings} == {"cand-2", "cand-3", "cand-4"}
+
+
+def test_get_page_source_filter_combines_with_min_score(store):
+    session_id = store.create(
+        recruiter_id=None,
+        query="Java Developer",
+        session_data={},
+        rankings=_make_rankings(5),  # scores 100, 99, 98, 97, 96
+        candidate_sources={f"cand-{i}": "github" for i in range(5)},
+    )
+    page = store.get_page(session_id, page=1, page_size=10, min_score=98, source="github")
+    assert page.total_count == 3
+    assert {r.candidate_id for r in page.rankings} == {"cand-0", "cand-1", "cand-2"}
+
+
+def test_get_source_counts_respects_min_score(store):
+    session_id = store.create(
+        recruiter_id=None,
+        query="Java Developer",
+        session_data={},
+        rankings=_make_rankings(5),  # scores 100, 99, 98, 97, 96
+        candidate_sources={f"cand-{i}": "github" for i in range(5)},
+    )
+    counts = store.get_source_counts(session_id, min_score=98)
+    assert counts == {"github": 3}
+
+
+def test_get_source_counts_unknown_session_raises(store):
+    with pytest.raises(SearchSessionNotFoundError):
+        store.get_source_counts("does-not-exist")
+
+
 def test_create_returns_a_session_id(store):
     session_id = store.create(
         recruiter_id="recruiter-1", query="Java Developer", session_data={"foo": "bar"}, rankings=_make_rankings(3)

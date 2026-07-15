@@ -67,13 +67,22 @@ class SearchSessionStore:
         query: str,
         session_data: dict,
         rankings: list[RankedCandidate],
+        candidate_sources: dict[str, str] | None = None,
     ) -> str:
         """Persists one full pipeline run's ranked output as a brand-new
         session -- always an insert, never an update. A recruiter running
         the "same" search again is, per the product spec, a NEW search:
         this method has no notion of "the existing session for this
-        query" and never looks one up to reuse."""
+        query" and never looks one up to reuse.
+
+        Sprint 36: `candidate_sources` (candidate_id -> Candidate.source)
+        is optional so every pre-Sprint-36 caller keeps working unchanged
+        (rows just get `source=None`) -- discovery_search.py's
+        smart_search() already has every candidate's `.source` in memory
+        at persist time, so it's a cheap dict to build and pass, not a
+        second lookup."""
         session_id = str(uuid.uuid4())
+        candidate_sources = candidate_sources or {}
 
         # Defensive dedup by candidate_id -- the Ranking Engine already
         # guarantees one entry per candidate, but the unique constraint
@@ -99,6 +108,16 @@ class SearchSessionStore:
                     created_at=datetime.now(timezone.utc),
                 )
             )
+            # There is no ORM-level relationship() between SearchSessionRow
+            # and SearchSessionCandidateRow (just a plain FK column) -- so
+            # the unit-of-work has no dependency edge to sort insert order
+            # on, and nothing guarantees the parent row's INSERT is emitted
+            # before the batched child INSERTs below in the same flush.
+            # This flush executes the parent insert now, inside the same
+            # transaction, before any child rows exist as pending objects --
+            # fixes a latent FK-violation-on-Postgres bug that SQLite (used
+            # in this store's tests) never happened to surface.
+            db.flush()
             for ranked in deduped_rankings:
                 db.add(
                     SearchSessionCandidateRow(
@@ -111,6 +130,7 @@ class SearchSessionStore:
                         matched_fields=ranked.match.matched_fields,
                         missing_fields=ranked.match.missing_fields,
                         reasons=ranked.match.reasons,
+                        source=candidate_sources.get(ranked.candidate_id),
                     )
                 )
             db.commit()
@@ -118,7 +138,12 @@ class SearchSessionStore:
         return session_id
 
     def get_page(
-        self, session_id: str, page: int, page_size: int, min_score: float | None = None
+        self,
+        session_id: str,
+        page: int,
+        page_size: int,
+        min_score: float | None = None,
+        source: str | None = None,
     ) -> SearchSessionPage:
         """Sprint 35 Phase 2: `min_score`, when given, restricts this page
         (and its pagination math) to candidates whose stored
@@ -126,7 +151,16 @@ class SearchSessionStore:
         recruiter's default view can hide weak matches without the
         Ranking Engine ever re-running. `total_unfiltered_count` on the
         returned page is always the TRUE total regardless of this filter,
-        so a caller can report how many weak matches were hidden."""
+        so a caller can report how many weak matches were hidden.
+
+        Sprint 36: `source`, when given, additionally restricts this page
+        to one Source Group (e.g. "GitHub only") -- the SAME underlying
+        global rank order and scores are used, just filtered to rows
+        whose stored `source` column matches. This is what lets future
+        per-source filtering ("show me only Ashby candidates") work with
+        no change to the Ranking Engine or to how a session is created --
+        it's one more WHERE clause on an already-persisted, already-
+        globally-ranked table, exactly like min_score above."""
         with self._session_factory() as db:
             session_row = db.get(SearchSessionRow, session_id)
             if session_row is None:
@@ -139,6 +173,8 @@ class SearchSessionStore:
             )
             if min_score is not None:
                 count_query = count_query.where(SearchSessionCandidateRow.overall_score >= min_score)
+            if source is not None:
+                count_query = count_query.where(SearchSessionCandidateRow.source == source)
             total_count = len(db.execute(count_query).scalars().all())
 
             total_pages = max(1, math.ceil(total_count / page_size)) if total_count else 1
@@ -151,6 +187,8 @@ class SearchSessionStore:
             )
             if min_score is not None:
                 rows_query = rows_query.where(SearchSessionCandidateRow.overall_score >= min_score)
+            if source is not None:
+                rows_query = rows_query.where(SearchSessionCandidateRow.source == source)
             candidate_rows = (
                 db.execute(rows_query.offset(start).limit(page_size))
                 .scalars()
@@ -186,3 +224,30 @@ class SearchSessionStore:
                 rankings=rankings,
                 total_unfiltered_count=total_unfiltered_count,
             )
+
+    def get_source_counts(self, session_id: str, min_score: float | None = None) -> dict[str, int]:
+        """Sprint 36: per-Source-Group totals for this session -- e.g.
+        {"github": 18, "seed_data": 12} -- computed directly from the
+        persisted rows, with no re-run of Discovery/Matching/Ranking.
+        Used to build each Source Group's `candidate_count` on
+        GET /api/search/session/{id} (the POST path already has this data
+        in memory pre-persistence and doesn't need to call this). Rows
+        with `source=None` (sessions created before Sprint 36, or by a
+        caller that didn't pass `candidate_sources`) are reported under
+        the key `None` rather than silently dropped."""
+        with self._session_factory() as db:
+            session_row = db.get(SearchSessionRow, session_id)
+            if session_row is None:
+                raise SearchSessionNotFoundError(f"No search session found for id {session_id!r}.")
+
+            query = select(SearchSessionCandidateRow).where(
+                SearchSessionCandidateRow.session_id == session_id
+            )
+            if min_score is not None:
+                query = query.where(SearchSessionCandidateRow.overall_score >= min_score)
+            rows = db.execute(query).scalars().all()
+
+            counts: dict[str, int] = {}
+            for row in rows:
+                counts[row.source] = counts.get(row.source, 0) + 1
+            return counts

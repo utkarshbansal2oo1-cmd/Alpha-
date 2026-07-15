@@ -84,6 +84,40 @@ def test_is_configured(store):
     assert store.is_configured("github") is True
 
 
+def test_clear_secret_removes_the_row_and_get_secret_returns_none(store, session_factory):
+    store.set_secret("github", "ghp_fake_token")
+    store.clear_secret("github")
+
+    assert store.get_secret("github") is None
+    assert store.is_configured("github") is False
+    with session_factory() as db:
+        rows = db.query(ConnectorCredentialRow).filter_by(provider="github").all()
+        assert rows == []
+
+
+def test_clear_secret_evicts_the_cache_not_just_the_row(store):
+    store.set_secret("github", "ghp_fake_token")
+    store.get_secret("github")  # warms cache
+    store.clear_secret("github")
+    # If the cache weren't evicted, this would still return the stale token.
+    assert store.get_secret("github") is None
+
+
+def test_clear_secret_is_a_noop_when_never_configured(store):
+    store.clear_secret("github")  # must not raise
+    assert store.get_secret("github") is None
+
+
+def test_clear_secret_only_affects_its_own_provider(store):
+    store.set_secret("github", "github-token")
+    store.set_secret("greenhouse", "greenhouse-key")
+
+    store.clear_secret("github")
+
+    assert store.get_secret("github") is None
+    assert store.get_secret("greenhouse") == "greenhouse-key"
+
+
 def test_cache_avoids_second_db_hit(store, session_factory, monkeypatch):
     store.set_secret("github", "ghp_fake_token")
     store.get_secret("github")  # warms cache (set_secret already populates it too)

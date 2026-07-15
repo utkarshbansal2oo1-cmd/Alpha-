@@ -1,6 +1,7 @@
 import { memo, useMemo } from "react";
 import { motion } from "framer-motion";
-import { MapPin, Building2, Github, CheckCircle2, Activity } from "lucide-react";
+import { MapPin, Building2, CheckCircle2, Activity } from "lucide-react";
+import { getSourceBadge } from "../lib/sourceGroups";
 
 // Sprint 22: evidence is the hierarchy, not the score. The overall match
 // score still exists (recruiters do want a sortable number) but it's a
@@ -40,6 +41,12 @@ function CandidateCard({ candidate, match, rank, onOpen, index }) {
   const isGithub = candidate.source === "github";
   const activity = isGithub ? relativeActivity(candidate.github_last_activity) : null;
   const score = Math.round(match?.overall_score ?? 0);
+  // Sprint 36: every candidate card exposes its provenance, uniformly --
+  // not just GitHub-sourced ones. Same lookup the Source Group section
+  // headers use, so a card's badge always agrees with whichever section
+  // it's rendered in (and still renders correctly for the flat-grid
+  // fallback, where there's no section header at all).
+  const sourceBadge = useMemo(() => getSourceBadge(candidate.source), [candidate.source]);
 
   return (
     <motion.button
@@ -55,13 +62,12 @@ function CandidateCard({ candidate, match, rank, onOpen, index }) {
         <div className="min-w-0">
           <div className="flex items-center gap-2 text-xs text-ink-500">
             <span>#{rank}</span>
-            {isGithub && (
+            {sourceBadge.label && (
               <span className="flex items-center gap-1">
-                <Github className="h-3 w-3" strokeWidth={1.75} />
-                GitHub
+                {sourceBadge.Icon && <sourceBadge.Icon className="h-3 w-3" strokeWidth={1.75} />}
+                {sourceBadge.label}
               </span>
             )}
-            {!isGithub && candidate.source && <span className="capitalize">{candidate.source.replace(/_/g, " ")}</span>}
           </div>
           <h3 className="mt-1 truncate text-base font-semibold text-ink-100">{candidate.name}</h3>
           <p className="truncate text-sm text-ink-500">

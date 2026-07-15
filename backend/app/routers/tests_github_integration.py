@@ -88,3 +88,53 @@ def test_configure_returns_502_on_non_401_verification_failure():
         assert store.is_configured() is False
     finally:
         app.dependency_overrides.clear()
+
+
+# --- Sprint 37: POST /integrations/github/disconnect ------------------------
+
+
+def test_disconnect_after_configure_reverts_to_unconfigured():
+    store = GitHubConfigStore()
+    app.dependency_overrides[get_github_config_store] = lambda: store
+    app.dependency_overrides[get_github_verifier] = _fake_verifier
+    try:
+        client = TestClient(app)
+        client.post("/integrations/github/configure", json={"personal_access_token": "ghp_fake"})
+        assert store.is_configured() is True
+
+        resp = client.post("/integrations/github/disconnect")
+        assert resp.status_code == 200
+        assert resp.json() == {"configured": False}
+        assert store.is_configured() is False
+        assert store.get_status()["status"] == "unconfigured"
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_disconnect_when_never_configured_is_idempotent_not_an_error():
+    store = GitHubConfigStore()
+    app.dependency_overrides[get_github_config_store] = lambda: store
+    try:
+        client = TestClient(app)
+        resp = client.post("/integrations/github/disconnect")
+        assert resp.status_code == 200
+        assert resp.json() == {"configured": False}
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_reconnect_after_disconnect_works():
+    store = GitHubConfigStore()
+    app.dependency_overrides[get_github_config_store] = lambda: store
+    app.dependency_overrides[get_github_verifier] = _fake_verifier
+    try:
+        client = TestClient(app)
+        client.post("/integrations/github/configure", json={"personal_access_token": "ghp_first"})
+        client.post("/integrations/github/disconnect")
+
+        resp = client.post("/integrations/github/configure", json={"personal_access_token": "ghp_second"})
+        assert resp.status_code == 200
+        assert resp.json()["configured"] is True
+        assert store.get().personal_access_token == "ghp_second"
+    finally:
+        app.dependency_overrides.clear()

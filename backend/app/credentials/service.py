@@ -129,6 +129,24 @@ class ConnectorCredentialStore:
             row.updated_at = now
             db.commit()
 
+    def clear_secret(self, provider: str) -> None:
+        """Sprint 37: a real "disconnect" -- deletes the persisted row
+        entirely (not just blanking the secret or resetting status),
+        matching what a recruiter/admin clicking "Disconnect" expects: the
+        credential is gone, not lingering encrypted-but-unused. Evicts the
+        in-process cache too, so a stale `get_secret()` never serves the
+        disconnected token to the hot discovery path in the same process.
+        Idempotent -- calling this when nothing was ever configured is a
+        no-op, not an error."""
+        with self._session_factory() as db:
+            row = db.execute(
+                select(ConnectorCredentialRow).where(ConnectorCredentialRow.provider == provider)
+            ).scalar_one_or_none()
+            if row is not None:
+                db.delete(row)
+                db.commit()
+        self._cache.pop(provider, None)
+
     def get_status(self, provider: str) -> dict:
         """Always returns a dict, even when the provider was never
         configured -- callers (GET /integrations/status) shouldn't need

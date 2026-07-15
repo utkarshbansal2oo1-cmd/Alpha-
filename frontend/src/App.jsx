@@ -1,12 +1,13 @@
-import { Suspense, lazy, useCallback, useMemo, useRef, useState } from "react";
+import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { AlertTriangle, RotateCcw } from "lucide-react";
-import { getSearchSessionPage, smartSearch, SearchError } from "./api";
+import { AlertTriangle, Github, RotateCcw } from "lucide-react";
+import { getIntegrationsStatus, getSearchSessionPage, smartSearch, SearchError } from "./api";
 import SearchBar from "./components/SearchBar";
 import DiscoveryTimeline from "./components/DiscoveryTimeline";
 import CandidateGrid from "./components/CandidateGrid";
 import EmptyState from "./components/EmptyState";
 import CommandPalette from "./components/CommandPalette";
+import GithubConnectModal from "./components/GithubConnectModal";
 
 // Performance: the R3F scene (three.js + fiber) is one of the heaviest
 // dependencies in this bundle -- lazy-loaded so it's not on the
@@ -48,6 +49,23 @@ export default function App() {
   const [pageLoading, setPageLoading] = useState(false);
   const [pageError, setPageError] = useState(null);
   const searchInputRef = useRef(null);
+
+  // Sprint 37: GitHub connector onboarding. `githubStatus` mirrors the
+  // `github` key from GET /integrations/status -- fetched once on mount
+  // so the header icon and the "not connected" banner both reflect real
+  // backend state from the first render, not an assumed default.
+  const [githubStatus, setGithubStatus] = useState(null);
+  const [githubModalOpen, setGithubModalOpen] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    getIntegrationsStatus().then((data) => {
+      if (!cancelled) setGithubStatus(data.github);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const runSearch = useCallback(async (submittedQuery) => {
     setQuery(submittedQuery);
@@ -102,6 +120,18 @@ export default function App() {
     [response]
   );
 
+  // Sprint 37 objective 4: never let seed fallback pass silently -- if
+  // this search's own discovery run shows GitHub was never configured
+  // AND seed fallback is why the recruiter is seeing suggested profiles,
+  // say so explicitly with a way to fix it right there.
+  const githubNotConnectedInThisRun = useMemo(() => {
+    if (!response?.seed_fallback_used) return false;
+    const githubResult = (response?.discovery?.connector_results || []).find(
+      (c) => c.source_name?.toLowerCase() === "github"
+    );
+    return githubResult ? githubResult.configured === false : !githubStatus?.configured;
+  }, [response, githubStatus]);
+
   const scenePhase = phase === "requesting" || phase === "discovering" ? "searching" : phase === "results" ? "results" : "idle";
   const isHome = phase === "idle";
 
@@ -120,16 +150,36 @@ export default function App() {
           </div>
           <span className="text-sm font-semibold tracking-tight text-ink-100">AlphaSource</span>
         </div>
-        {phase !== "idle" && (
+        <div className="flex items-center gap-2">
           <button
-            onClick={reset}
-            className="flex items-center gap-1.5 rounded-full border border-white/[0.08] bg-white/[0.04] px-3.5 py-1.5 text-xs font-medium text-ink-300 transition-colors hover:bg-white/[0.08] hover:text-ink-100"
+            onClick={() => setGithubModalOpen(true)}
+            className={`flex items-center gap-1.5 rounded-full border px-3.5 py-1.5 text-xs font-medium transition-colors ${
+              githubStatus?.configured
+                ? "border-signal-green/30 bg-signal-green/10 text-signal-green hover:bg-signal-green/20"
+                : "border-white/[0.08] bg-white/[0.04] text-ink-300 hover:bg-white/[0.08] hover:text-ink-100"
+            }`}
           >
-            <RotateCcw className="h-3.5 w-3.5" strokeWidth={1.75} />
-            New search
+            <Github className="h-3.5 w-3.5" strokeWidth={1.75} />
+            {githubStatus?.configured ? "GitHub connected" : "Connect GitHub"}
           </button>
-        )}
+          {phase !== "idle" && (
+            <button
+              onClick={reset}
+              className="flex items-center gap-1.5 rounded-full border border-white/[0.08] bg-white/[0.04] px-3.5 py-1.5 text-xs font-medium text-ink-300 transition-colors hover:bg-white/[0.08] hover:text-ink-100"
+            >
+              <RotateCcw className="h-3.5 w-3.5" strokeWidth={1.75} />
+              New search
+            </button>
+          )}
+        </div>
       </header>
+
+      <GithubConnectModal
+        open={githubModalOpen}
+        onClose={() => setGithubModalOpen(false)}
+        status={githubStatus}
+        onStatusChange={setGithubStatus}
+      />
 
       <main className="relative z-10 mx-auto flex min-h-[calc(100vh-88px)] max-w-6xl flex-col items-center px-6 pb-24">
         <div
@@ -208,9 +258,28 @@ export default function App() {
                     </div>
                   )}
 
+                  {githubNotConnectedInThisRun && (
+                    <div className="mb-6 flex items-center gap-3 rounded-xl border border-accent-500/25 bg-accent-500/[0.06] px-4 py-3">
+                      <Github className="h-4 w-4 shrink-0 text-accent-400" strokeWidth={1.75} />
+                      <p className="flex-1 text-xs text-ink-300">
+                        GitHub is not connected. Showing suggested profiles until a live talent source is connected.
+                      </p>
+                      <button
+                        onClick={() => setGithubModalOpen(true)}
+                        className="shrink-0 rounded-full bg-accent-500 px-3 py-1 text-xs font-medium text-white transition-colors hover:bg-accent-600"
+                      >
+                        Connect
+                      </button>
+                    </div>
+                  )}
+
                   {response.total_count > 0 ? (
                     <>
-                      <CandidateGrid candidates={response.candidates} rankings={response.rankings} />
+                      <CandidateGrid
+                        candidates={response.candidates}
+                        rankings={response.rankings}
+                        sourceGroups={response.source_groups}
+                      />
 
                       {response.total_pages > 1 && (
                         <div className="mt-10 flex flex-col items-center gap-3">

@@ -51,9 +51,10 @@ again" requirement.
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.auth.dependencies import get_current_recruiter
 from app.candidate_repository.interfaces import CandidateRepository
@@ -74,11 +75,12 @@ from app.discovery.models import DiscoveryRun
 from app.discovery.orchestrator import DiscoveryOrchestrator
 from app.discovery.query_translation.models import ConnectorTranslationConfig, get_connector_translation_config
 from app.discovery.query_translation.translator import ConnectorQueryTranslator
+from app.discovery.source_groups import get_source_group_info
 from app.integrations.github.config import GitHubConfigStore, get_github_config_store
 from app.integrations.greenhouse.config import GreenhouseConfigStore, get_greenhouse_config_store
 from app.matching.config import MatchingConfig, get_matching_config
 from app.matching.engine import MatchingEngine
-from app.matching.models import RankedCandidate
+from app.matching.models import MatchResult, RankedCandidate
 from app.matching.ranking import RankingEngine
 from app.query_understanding.models import LLMClientError, QueryValidationError, ResponseParseError
 from app.query_understanding.service import QueryUnderstandingService
@@ -94,6 +96,65 @@ from app.search_sessions.store import SearchSessionNotFoundError, SearchSessionS
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["discovery"])
+
+
+class CandidateProvenance(BaseModel):
+    """Sprint 36: full provenance for one candidate, kept separate from
+    Candidate itself (which stays exactly as the Candidate Repository
+    defines it -- untouched per this sprint's explicit constraint).
+
+    `source` (where this candidate belongs -- its Source Group) and
+    `connector` (which mechanism most recently touched this record) are
+    deliberately two different fields, not aliases of each other -- see
+    app/discovery/source_groups.py's module docstring for why they can
+    diverge once a candidate has been captured/enriched by more than one
+    connector over its lifetime (Candidate.capture_sources already models
+    that -- this is the first place that distinction is surfaced to a
+    caller). Today, for every existing connector, they happen to be equal
+    (a GitHub candidate's most recent capture IS the GitHub connector),
+    but nothing here assumes that stays true forever.
+    """
+
+    candidate_id: str
+    source: str
+    connector: str
+    discovery_method: str
+    discovered_at: datetime | None = None
+    last_updated: datetime | None = None
+    evidence: list[str] = Field(default_factory=list)
+
+
+class SourceGroup(BaseModel):
+    """Sprint 36: a Source Group is a DOMAIN concept (where a candidate
+    belongs), not a UI section -- the frontend renders one of these per
+    group, but the grouping itself is computed here, from real discovery/
+    ranking output, not invented for display. Every field is either
+    presentation metadata from app/discovery/source_groups.py (display_name,
+    icon, trust_level, is_live, is_fallback) or a real count/timing drawn
+    from this search's actual DiscoveryRun/MatchResult/RankedCandidate
+    data -- nothing here is fabricated to look complete.
+
+    Global ranking is untouched: `rankings` here is a per-source SLICE of
+    the one globally-computed rank list (see smart_search()'s single
+    `ranking_engine.rank()` call) -- each RankedCandidate keeps its real,
+    global `rank` number, so "rank 7 overall" and "rank 2 within GitHub"
+    are both visible and never contradict each other."""
+
+    source: str
+    display_name: str
+    icon: str
+    trust_level: str
+    is_live: bool
+    is_fallback: bool
+    candidate_count: int  # how many of this source are on THIS page/response
+    searched_count: int  # how many this source's connector considered, session-wide
+    qualified_count: int  # how many of this source cleared the relevance threshold, session-wide
+    discovery_time_ms: float | None = None
+    matching_time_ms: float | None = None
+    ranking_time_ms: float | None = None
+    candidates: list[Candidate]
+    rankings: list[RankedCandidate]
+    provenance: list[CandidateProvenance]
 
 
 class SmartSearchResponse(BaseModel):
@@ -140,6 +201,15 @@ class SmartSearchResponse(BaseModel):
     weak_match_count: int
     include_weak_matches: bool
     seed_fallback_used: bool
+
+    # --- Sprint 36 addition -------------------------------------------------
+    # `source_groups`: the SAME globally-ranked `candidates`/`rankings`
+    # above, additionally partitioned by Source Group for presentation --
+    # never a second ranking, never a re-score. `candidates`/`rankings`
+    # are kept as-is (not deprecated in this sprint) so any existing
+    # caller of the flat shape is completely unaffected; `source_groups`
+    # is the new, recommended way for the frontend to render results.
+    source_groups: list[SourceGroup] = Field(default_factory=list)
 
 
 # --- Dependency injection ----------------------------------------------------
@@ -225,6 +295,93 @@ def _candidates_for_rankings(
         candidates.append(candidate)
         surviving_rankings.append(ranked)
     return candidates, surviving_rankings
+
+
+def _build_provenance(candidate: Candidate, match: MatchResult | None) -> CandidateProvenance:
+    """Sprint 36: derives full provenance entirely from fields Candidate
+    already carries (capture_sources, github_last_activity) -- no schema
+    change to Candidate itself. `connector` intentionally reads from the
+    MOST RECENT capture_sources entry (not simply Candidate.source) so
+    that once a candidate has been touched by more than one connector
+    over its lifetime, `source` (its stable Source Group) and `connector`
+    (what most recently touched it) can genuinely diverge, per this
+    sprint's explicit Source-vs-Connector distinction."""
+    group_info = get_source_group_info(candidate.source)
+    if candidate.capture_sources:
+        connector = candidate.capture_sources[-1].source_type
+        discovered_at = candidate.capture_sources[0].capture_time
+        last_updated = candidate.capture_sources[-1].capture_time
+    else:
+        connector = candidate.source
+        discovered_at = None
+        last_updated = candidate.github_last_activity if candidate.source == "github" else None
+    return CandidateProvenance(
+        candidate_id=candidate.id,
+        source=candidate.source,
+        connector=connector,
+        discovery_method=group_info.discovery_method,
+        discovered_at=discovered_at,
+        last_updated=last_updated,
+        evidence=list(match.reasons) if match is not None else [],
+    )
+
+
+def _build_source_groups(
+    page_candidates: list[Candidate],
+    page_rankings: list[RankedCandidate],
+    searched_counts: dict[str, int],
+    qualified_counts: dict[str, int],
+) -> list[SourceGroup]:
+    """Sprint 36: partitions an ALREADY globally-ranked page into Source
+    Groups for presentation -- no re-ranking, no re-scoring. Each
+    RankedCandidate keeps its real global `rank`. Fallback sources (today
+    only seed_data) are always ordered last, never interleaved with live
+    sources regardless of score -- this is the one place source ordering
+    is enforced, and it is presentation-only: it does not change which
+    candidates were selected or how they were scored, only display order
+    of the groups themselves.
+    """
+    rankings_by_id = {r.candidate_id: r for r in page_rankings}
+    by_source: dict[str, list[Candidate]] = {}
+    for candidate in page_candidates:
+        by_source.setdefault(candidate.source, []).append(candidate)
+
+    live_sources = [s for s in by_source if not get_source_group_info(s).is_fallback]
+    fallback_sources = [s for s in by_source if get_source_group_info(s).is_fallback]
+
+    groups: list[SourceGroup] = []
+    for source in [*live_sources, *fallback_sources]:
+        info = get_source_group_info(source)
+        group_candidates = by_source[source]
+        group_rankings = [rankings_by_id[c.id] for c in group_candidates if c.id in rankings_by_id]
+        groups.append(
+            SourceGroup(
+                source=source,
+                display_name=info.display_name,
+                icon=info.icon,
+                trust_level=info.trust_level,
+                is_live=info.is_live,
+                is_fallback=info.is_fallback,
+                candidate_count=len(group_candidates),
+                searched_count=searched_counts.get(source, len(group_candidates)),
+                qualified_count=qualified_counts.get(source, len(group_candidates)),
+                # Sprint 36 Phase 1 scope: per-source timing instrumentation
+                # is genuinely new work (nothing in the pipeline times
+                # Discovery/Matching/Ranking per-source today) -- left None
+                # here rather than fabricated, to be filled in by a
+                # follow-up phase that adds real timers around those calls.
+                discovery_time_ms=None,
+                matching_time_ms=None,
+                ranking_time_ms=None,
+                candidates=group_candidates,
+                rankings=group_rankings,
+                provenance=[
+                    _build_provenance(c, rankings_by_id[c.id].match if c.id in rankings_by_id else None)
+                    for c in group_candidates
+                ],
+            )
+        )
+    return groups
 
 
 @router.post("/api/search/smart", response_model=SmartSearchResponse)
@@ -320,6 +477,30 @@ def smart_search(
 
     rankings = ranking_engine.rank(final_candidates, final_matches)
 
+    # Sprint 36: Source Group totals, computed once here from real
+    # in-memory data -- never recomputed, never estimated beyond what's
+    # honestly known. `searched_counts` prefers a connector's own reported
+    # raw count (e.g. GitHub's raw_candidates_found) when available,
+    # falling back to how many of that source survived into the
+    # post-discovery candidate pool for connectors that don't report a
+    # raw count yet. `qualified_counts` is exactly how many of each
+    # source made it into `final_candidates` -- i.e. actually got ranked.
+    searched_counts: dict[str, int] = {}
+    for candidate in candidates:
+        searched_counts[candidate.source] = searched_counts.get(candidate.source, 0) + 1
+    for result in discovery_run.connector_results:
+        if result.raw_candidates_found is not None:
+            searched_counts[result.source_name] = result.raw_candidates_found
+
+    qualified_counts: dict[str, int] = {}
+    for candidate in final_candidates:
+        qualified_counts[candidate.source] = qualified_counts.get(candidate.source, 0) + 1
+
+    # Sprint 36: a denormalized copy of each candidate's source, passed to
+    # SearchSessionStore.create() so GET /api/search/session/{id} can
+    # filter/group by source later without ever re-deriving it.
+    candidate_sources = {c.id: c.source for c in final_candidates}
+
     # Sprint 33: this is the ONLY place the full pipeline's ranked output
     # is computed. Persist it now -- every page of this search, including
     # this first one, is served by slicing this stored session, never by
@@ -338,13 +519,19 @@ def smart_search(
             "seed_fallback_used": seed_fallback_used,
         },
         rankings=rankings,
+        candidate_sources=candidate_sources,
     )
 
     min_score = None if payload.include_weak_matches else relevance_threshold
     page = session_store.get_page(
-        session_id, page=payload.page, page_size=payload.page_size, min_score=min_score
+        session_id,
+        page=payload.page,
+        page_size=payload.page_size,
+        min_score=min_score,
+        source=payload.source_filter,
     )
     page_candidates, page_rankings = _candidates_for_rankings(page.rankings, repository)
+    source_groups = _build_source_groups(page_candidates, page_rankings, searched_counts, qualified_counts)
 
     return SmartSearchResponse(
         session_id=session_id,
@@ -365,6 +552,7 @@ def smart_search(
         weak_match_count=page.total_unfiltered_count - page.total_count,
         include_weak_matches=payload.include_weak_matches,
         seed_fallback_used=seed_fallback_used,
+        source_groups=source_groups,
     )
 
 
@@ -374,6 +562,7 @@ def get_search_session_page(
     page: int = 1,
     page_size: int = 20,
     include_weak_matches: bool = False,
+    source: str | None = None,
     repository: CandidateRepository = Depends(get_candidate_repository),
     session_store: SearchSessionStore = Depends(get_search_session_store),
     _recruiter: RecruiterRow = Depends(get_current_recruiter),
@@ -389,7 +578,19 @@ def get_search_session_page(
     relevance_threshold computed (and persisted) at POST time -- via
     session_data["relevance_threshold"] -- rather than recomputing
     anything, so a weak match hidden on page 1 stays hidden (or shown)
-    consistently across every subsequent page of the same session."""
+    consistently across every subsequent page of the same session.
+
+    Sprint 36: `source`, when given, restricts this page to one Source
+    Group (e.g. "github") -- one more WHERE clause on the already-stored,
+    already-globally-ranked rows (see SearchSessionStore.get_page()), not
+    a re-run of anything. `source_groups`' searched_count/qualified_count
+    are reconstructed from storage: qualified_count via
+    get_source_counts(min_score=relevance_threshold) (how many of each
+    source are actually persisted above threshold), searched_count
+    preferring the real per-connector raw count already persisted in
+    session_data["discovery"]["connector_results"] when a connector
+    reported one, falling back to the same persisted qualified total
+    otherwise (an honest lower bound, never a fabricated larger number)."""
     if page < 1:
         raise HTTPException(status_code=422, detail="page must be >= 1")
     if page_size < 1 or page_size > 50:
@@ -407,12 +608,23 @@ def get_search_session_page(
 
     min_score = None if include_weak_matches else relevance_threshold
     try:
-        session_page = session_store.get_page(session_id, page=page, page_size=page_size, min_score=min_score)
+        session_page = session_store.get_page(
+            session_id, page=page, page_size=page_size, min_score=min_score, source=source
+        )
     except SearchSessionNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
 
     candidates, rankings = _candidates_for_rankings(session_page.rankings, repository)
     session_data = session_page.session_data
+
+    # Sprint 36: reconstruct Source Group totals from storage -- no
+    # recomputation of Discovery/Matching/Ranking.
+    qualified_counts = session_store.get_source_counts(session_id, min_score=relevance_threshold)
+    searched_counts = dict(session_store.get_source_counts(session_id, min_score=None))
+    for result in session_data.get("discovery", {}).get("connector_results", []):
+        if result.get("raw_candidates_found") is not None:
+            searched_counts[result["source_name"]] = result["raw_candidates_found"]
+    source_groups = _build_source_groups(candidates, rankings, searched_counts, qualified_counts)
 
     return SmartSearchResponse(
         session_id=session_page.session_id,
@@ -433,4 +645,5 @@ def get_search_session_page(
         weak_match_count=session_page.total_unfiltered_count - session_page.total_count,
         include_weak_matches=include_weak_matches,
         seed_fallback_used=seed_fallback_used,
+        source_groups=source_groups,
     )

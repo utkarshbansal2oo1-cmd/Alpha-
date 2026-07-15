@@ -79,3 +79,14 @@ class SearchSessionCandidateRow(Base):
     matched_fields: Mapped[list] = mapped_column(JSON, nullable=False)
     missing_fields: Mapped[list] = mapped_column(JSON, nullable=False)
     reasons: Mapped[list] = mapped_column(JSON, nullable=False)
+    # Sprint 36: the candidate's Source Group at the time this session was
+    # created (a denormalized copy of Candidate.source, same "store a
+    # copy, re-fetch the rest from the repository" pattern this table
+    # already uses for score/reasons/etc.) -- lets get_page() filter or
+    # group a session's stored ranking by source without ever touching
+    # the Ranking Engine, which still computed one GLOBAL rank across all
+    # sources (see `rank` above, unchanged in meaning). Nullable so
+    # existing pre-Sprint-36 session rows remain fully readable; a
+    # backfill (re-deriving source from the CandidateRepository by id)
+    # can populate it for historical rows without downtime.
+    source: Mapped[str | None] = mapped_column(String, nullable=True, index=True)

@@ -406,6 +406,122 @@ def test_seed_not_used_when_live_candidates_are_already_strong(tmp_path):
         app.dependency_overrides.clear()
 
 
+# --- Sprint 36: Source Groups (presentation-layer grouping) ----------------
+
+
+def test_source_groups_fallback_group_always_ordered_last(tmp_path):
+    client, repo, config_store = _client_with_repo(tmp_path)
+    # Deliberately few (2, not 5) so the initial repository.search() result
+    # is NOT "already sufficient" per the Decision Engine -- discovery must
+    # actually trigger and call the weak github connector, so both a
+    # "github" group and a "seed_data" fallback group genuinely exist to
+    # order.
+    _seed_candidates(repo, 2)
+    fake_llm = FakeLLMClient(responses=['{"role": "Product Manager", "skills": ["Roadmapping"]}'])
+    app.dependency_overrides[get_query_understanding_service] = lambda: QueryUnderstandingService(llm_client=fake_llm)
+    app.dependency_overrides[get_connector_registry] = lambda: _FakeConnectorRegistry([_WeakMatchConnector()])
+
+    try:
+        resp = client.post("/api/search/smart", json={"query": "Product Manager", "include_weak_matches": True})
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["seed_fallback_used"] is True
+
+        sources_in_order = [g["source"] for g in body["source_groups"]]
+        assert sources_in_order[-1] == "seed_data"
+        assert "github" in sources_in_order
+        # Fallback group correctly marked, and never labeled "seed" to the recruiter.
+        seed_group = next(g for g in body["source_groups"] if g["source"] == "seed_data")
+        assert seed_group["is_fallback"] is True
+        assert "seed" not in seed_group["display_name"].lower()
+        assert seed_group["display_name"] == "Suggested Profiles"
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_source_groups_preserve_global_rank_and_partition_candidates(tmp_path):
+    client, repo, config_store = _client_with_repo(tmp_path)
+    _seed_candidates(repo, 5)
+    fake_llm = FakeLLMClient(responses=['{"role": "Senior Golang Developer", "skills": ["Golang"]}'])
+    app.dependency_overrides[get_query_understanding_service] = lambda: QueryUnderstandingService(llm_client=fake_llm)
+    app.dependency_overrides[get_connector_registry] = lambda: _FakeConnectorRegistry([_TenStrongMatchConnector()])
+
+    try:
+        resp = client.post("/api/search/smart", json={"query": "Senior Golang Developer with Golang"})
+        assert resp.status_code == 200
+        body = resp.json()
+
+        # No seed fallback here (strong live matches) -- only one group.
+        assert len(body["source_groups"]) == 1
+        github_group = body["source_groups"][0]
+        assert github_group["source"] == "github"
+        assert github_group["candidate_count"] == 10
+        assert github_group["is_fallback"] is False
+
+        # Every RankedCandidate inside the group keeps its real GLOBAL rank
+        # -- the same rank numbers that appear in the flat top-level
+        # `rankings` list, not a re-numbered 1..N within the group.
+        flat_ranks_by_id = {r["candidate_id"]: r["rank"] for r in body["rankings"]}
+        for ranking in github_group["rankings"]:
+            assert ranking["rank"] == flat_ranks_by_id[ranking["candidate_id"]]
+
+        # Every candidate in the group has full provenance.
+        assert len(github_group["provenance"]) == 10
+        for prov in github_group["provenance"]:
+            assert prov["source"] == "github"
+            assert prov["discovery_method"]
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_source_filter_restricts_results_to_one_source_group(tmp_path):
+    client, repo, config_store = _client_with_repo(tmp_path)
+    _seed_candidates(repo, 5)
+    fake_llm = FakeLLMClient(responses=['{"role": "Product Manager", "skills": ["Roadmapping"]}'])
+    app.dependency_overrides[get_query_understanding_service] = lambda: QueryUnderstandingService(llm_client=fake_llm)
+    app.dependency_overrides[get_connector_registry] = lambda: _FakeConnectorRegistry([_WeakMatchConnector()])
+
+    try:
+        resp = client.post(
+            "/api/search/smart",
+            json={"query": "Product Manager", "include_weak_matches": True, "source_filter": "seed_data"},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["count"] == 5
+        assert all(c["source"] == "seed_data" for c in body["candidates"])
+        assert len(body["source_groups"]) == 1
+        assert body["source_groups"][0]["source"] == "seed_data"
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_get_session_page_source_query_param_filters_and_rebuilds_groups(tmp_path):
+    client, repo, config_store = _client_with_repo(tmp_path)
+    _seed_candidates(repo, 2)  # few enough that discovery still triggers -- see comment above
+    fake_llm = FakeLLMClient(responses=['{"role": "Product Manager", "skills": ["Roadmapping"]}'])
+    app.dependency_overrides[get_query_understanding_service] = lambda: QueryUnderstandingService(llm_client=fake_llm)
+    app.dependency_overrides[get_connector_registry] = lambda: _FakeConnectorRegistry([_WeakMatchConnector()])
+
+    try:
+        first = client.post(
+            "/api/search/smart", json={"query": "Product Manager", "include_weak_matches": True}
+        ).json()
+        session_id = first["session_id"]
+
+        resp = client.get(
+            f"/api/search/session/{session_id}",
+            params={"include_weak_matches": True, "source": "github"},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert all(c["source"] == "github" for c in body["candidates"])
+        assert len(body["source_groups"]) == 1
+        assert body["source_groups"][0]["source"] == "github"
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_smart_search_response_includes_relevance_threshold_fields(tmp_path):
     client, repo, config_store = _client_with_repo(tmp_path)
     _seed_candidates(repo, 3)

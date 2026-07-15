@@ -130,3 +130,79 @@ export async function getConnectors() {
     return [];
   }
 }
+
+// Sprint 37: GitHub connector onboarding. These call the GitHub-specific
+// PAT flow (/integrations/github/*, /integrations/status) -- a DIFFERENT
+// system from getConnectors() above, which reads the older generic
+// ManagedConnectorRegistry (/connectors). See backend/app/routers/
+// github_integration.py and app/routers/integrations_status.py.
+
+/**
+ * GET /integrations/status -- current connection state for every
+ * connector the onboarding UI cares about (today: github). Always
+ * resolves to a plain object even on network failure, so callers never
+ * need a try/catch just to render "not connected".
+ */
+export async function getIntegrationsStatus() {
+  try {
+    const res = await fetch(`${API_ROOT}/integrations/status`);
+    if (!res.ok) return { github: { configured: false, status: "unconfigured" } };
+    return await res.json();
+  } catch {
+    return { github: { configured: false, status: "unconfigured" } };
+  }
+}
+
+/**
+ * POST /integrations/github/configure -- verifies the PAT against the
+ * real GitHub API BEFORE anything is saved (see the backend endpoint's
+ * own docstring). Throws SearchError with the backend's actual detail
+ * message on a 401 (invalid token) or 502 (GitHub unreachable), so the
+ * modal can show it directly.
+ */
+export async function configureGithub(personalAccessToken) {
+  let res;
+  try {
+    res = await fetch(`${API_ROOT}/integrations/github/configure`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ personal_access_token: personalAccessToken }),
+    });
+  } catch {
+    throw new SearchError("Could not reach the backend to verify this token.", 0);
+  }
+
+  if (!res.ok) {
+    let detail = `Could not verify this token (${res.status})`;
+    try {
+      const body = await res.json();
+      if (body?.detail) detail = body.detail;
+    } catch {
+      // Response body wasn't JSON -- keep the generic message above.
+    }
+    throw new SearchError(detail, res.status);
+  }
+
+  return res.json();
+}
+
+/**
+ * POST /integrations/github/disconnect -- idempotent; removes the stored
+ * PAT entirely. Never throws on a "nothing was configured" case (the
+ * backend itself treats that as success), only on genuine network/HTTP
+ * failure.
+ */
+export async function disconnectGithub() {
+  let res;
+  try {
+    res = await fetch(`${API_ROOT}/integrations/github/disconnect`, { method: "POST" });
+  } catch {
+    throw new SearchError("Could not reach the backend to disconnect GitHub.", 0);
+  }
+
+  if (!res.ok) {
+    throw new SearchError(`Could not disconnect GitHub (${res.status})`, res.status);
+  }
+
+  return res.json();
+}

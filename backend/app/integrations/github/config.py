@@ -136,6 +136,21 @@ class GitHubConfigStore:
             return self._credential_store.get_status(_PROVIDER)
         return dict(self._status_memory)
 
+    def clear(self) -> None:
+        """Sprint 37: disconnect -- removes the PAT entirely (persistent
+        mode: deletes the row via ConnectorCredentialStore.clear_secret();
+        memory mode: drops the in-process attribute) and resets status
+        back to unconfigured, exactly matching what GET /integrations/
+        status reports for a connector that was never configured. Safe to
+        call when nothing was ever configured -- both backends treat that
+        as a no-op, not an error, matching this store's existing
+        idempotent-by-design style (see `is_configured()`)."""
+        if self._credential_store is not None:
+            self._credential_store.clear_secret(_PROVIDER)
+        else:
+            self._pat_memory = None
+            self._status_memory = dict(_UNCONFIGURED_STATUS)
+
 
 def _build_github_config_store() -> GitHubConfigStore:
     backend = settings.CONNECTOR_CREDENTIALS_BACKEND.strip().lower()

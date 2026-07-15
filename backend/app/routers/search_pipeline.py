@@ -63,6 +63,14 @@ class SearchQueryRequest(BaseModel):
     include_weak_matches: bool = Field(
         False, description="Include below-threshold weak matches (smart search only)"
     )
+    # Sprint 36: restrict results to one Source Group (e.g. "github") --
+    # inert here, same pattern as the fields above. See
+    # app/discovery/source_groups.py for the set of recognized source
+    # strings; an unrecognized value simply yields zero results rather
+    # than an error, same as any other filter with no matches.
+    source_filter: str | None = Field(
+        default=None, description="Restrict to one Source Group by `source` value (smart search only)"
+    )
 
 
 class SearchQueryResponse(BaseModel):

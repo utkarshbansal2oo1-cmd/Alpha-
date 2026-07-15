@@ -42,6 +42,10 @@ class ConfigureResponse(BaseModel):
     verified_scopes: list[str] | None = None
 
 
+class DisconnectResponse(BaseModel):
+    configured: bool
+
+
 def get_github_verifier():
     """Returns a callable(config: GitHubConfig) -> tuple[str, list[str]]
     that makes one real GitHub API call to verify a PAT, raising
@@ -97,3 +101,20 @@ def configure_github(
         verified_username=username,
         verified_scopes=scopes or None,
     )
+
+
+@router.post("/disconnect", response_model=DisconnectResponse)
+def disconnect_github(
+    config_store: GitHubConfigStore = Depends(get_github_config_store),
+    _recruiter: RecruiterRow = Depends(get_current_recruiter),
+) -> DisconnectResponse:
+    """Sprint 37: the recruiter-facing "Disconnect" action -- removes the
+    stored PAT entirely (see GitHubConfigStore.clear()) so the connector
+    reverts to exactly the same unconfigured state GET /integrations/
+    status reports for a connector that was never connected in the first
+    place. Idempotent: disconnecting when nothing was configured returns
+    the same {"configured": false} rather than erroring, since the
+    end state the caller cares about (GitHub is not connected) is already
+    true either way."""
+    config_store.clear()
+    return DisconnectResponse(configured=False)

@@ -62,6 +62,28 @@ class MatchingConfig:
     def priority_for(self, connector_name: str, declared_priority: int) -> int:
         return self.connector_priority.get(connector_name, declared_priority)
 
+    # --- Sprint 35: relevance visibility threshold (Solution 2/7) ----------
+    #
+    # min_visible_relevance_score is the flat fallback used when
+    # adaptive_relevance_threshold()'s pool-size tiers don't apply. The
+    # method itself implements Solution 7's adaptive tiers: a huge result
+    # pool gets a stricter cutoff (keeps common searches clean), a tiny
+    # pool gets a looser one (a niche search shouldn't hide every result
+    # it found), and everything in between uses the configured flat
+    # default. This threshold is used for two independent purposes in
+    # discovery_search.py's smart_search(): (1) deciding whether live
+    # (non-seed) candidates are sufficient on their own, and (2) splitting
+    # the final ranked pool into "visible by default" vs. "weaker matches,
+    # shown on request" for the API response.
+    min_visible_relevance_score: float = 60.0
+
+    def adaptive_relevance_threshold(self, total_candidates: int) -> float:
+        if total_candidates > 100:
+            return 70.0
+        if total_candidates < 20:
+            return 45.0
+        return self.min_visible_relevance_score
+
 
 _default_config = MatchingConfig()
 

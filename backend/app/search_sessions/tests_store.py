@@ -137,6 +137,54 @@ def test_create_dedupes_duplicate_candidate_ids_defensively(store):
     assert page.total_count == 1
 
 
+# --- Sprint 35 Phase 2: min_score filtering ----------------------------------
+
+
+def test_get_page_min_score_filters_out_weak_matches(store):
+    """_make_rankings(25) scores candidates 100.0 down to 76.0 (100-i for
+    i in 0..24) -- min_score=90 keeps scores 100..90 inclusive, 11
+    candidates, regardless of page_size."""
+    session_id = store.create(
+        recruiter_id="recruiter-1", query="Java Developer", session_data={}, rankings=_make_rankings(25)
+    )
+
+    page = store.get_page(session_id, page=1, page_size=20, min_score=90.0)
+
+    assert page.total_count == 11
+    assert len(page.rankings) == 11
+    assert all(r.match.overall_score >= 90.0 for r in page.rankings)
+    # The TRUE total is unaffected by the filter.
+    assert page.total_unfiltered_count == 25
+
+
+def test_get_page_min_score_none_returns_everything_with_correct_unfiltered_count(store):
+    session_id = store.create(
+        recruiter_id="recruiter-1", query="Java Developer", session_data={}, rankings=_make_rankings(5)
+    )
+
+    page = store.get_page(session_id, page=1, page_size=20, min_score=None)
+
+    assert page.total_count == 5
+    assert page.total_unfiltered_count == 5
+
+
+def test_get_page_min_score_paginates_the_filtered_set_correctly(store):
+    """min_score=90 leaves exactly 11 matching candidates (scores
+    100..90 inclusive) -- page_size=4 must paginate THAT filtered set,
+    not the original 25, so page 3 holds the final 3 remaining matches."""
+    session_id = store.create(
+        recruiter_id="recruiter-1", query="Java Developer", session_data={}, rankings=_make_rankings(25)
+    )
+
+    page3 = store.get_page(session_id, page=3, page_size=4, min_score=90.0)
+
+    assert page3.total_count == 11
+    assert page3.total_pages == 3
+    assert len(page3.rankings) == 3
+    assert page3.has_next is False
+    assert page3.has_previous is True
+
+
 def test_recruiter_id_may_be_none_for_anonymous(store):
     session_id = store.create(recruiter_id=None, query="Java Developer", session_data={}, rankings=_make_rankings(1))
     page = store.get_page(session_id, page=1, page_size=20)

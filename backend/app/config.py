@@ -118,5 +118,15 @@ class Settings(BaseSettings):
     GITHUB_MAX_SEARCH_PAGES: int = 5
     GITHUB_MAX_RAW_CANDIDATES: int = 500
 
+    # Sprint 35: Phase 6 (auto-expand GitHub discovery). discover() stops
+    # requesting further GitHub pages as soon as it has collected this many
+    # RELEVANT (post-filter) candidates -- not just raw results -- so a
+    # recruiter never has to manually re-search just to get more usable
+    # profiles. This is independent of GITHUB_MAX_SEARCH_PAGES/
+    # GITHUB_MAX_RAW_CANDIDATES, which remain the hard ceilings; this is
+    # the "we have enough, stop early" target, usually reached well before
+    # those ceilings.
+    GITHUB_TARGET_RELEVANT_CANDIDATES: int = 20
+
 
 settings = Settings()

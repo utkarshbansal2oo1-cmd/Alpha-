@@ -43,6 +43,11 @@ class SearchSessionPage:
     has_next: bool
     has_previous: bool
     rankings: list[RankedCandidate]  # already sliced to this page, in rank order
+    # Sprint 35 Phase 2: the TRUE total candidate count for this session,
+    # regardless of any min_score filtering applied to `total_count`/
+    # `rankings` above -- lets a caller report "42 weaker matches hidden"
+    # even on a filtered page.
+    total_unfiltered_count: int = 0
 
 
 class SearchSessionNotFoundError(Exception):
@@ -112,25 +117,42 @@ class SearchSessionStore:
 
         return session_id
 
-    def get_page(self, session_id: str, page: int, page_size: int) -> SearchSessionPage:
+    def get_page(
+        self, session_id: str, page: int, page_size: int, min_score: float | None = None
+    ) -> SearchSessionPage:
+        """Sprint 35 Phase 2: `min_score`, when given, restricts this page
+        (and its pagination math) to candidates whose stored
+        `overall_score >= min_score` -- e.g. a relevance threshold, so a
+        recruiter's default view can hide weak matches without the
+        Ranking Engine ever re-running. `total_unfiltered_count` on the
+        returned page is always the TRUE total regardless of this filter,
+        so a caller can report how many weak matches were hidden."""
         with self._session_factory() as db:
             session_row = db.get(SearchSessionRow, session_id)
             if session_row is None:
                 raise SearchSessionNotFoundError(f"No search session found for id {session_id!r}.")
 
-            total_count = session_row.total_count
+            total_unfiltered_count = session_row.total_count
+
+            count_query = select(SearchSessionCandidateRow).where(
+                SearchSessionCandidateRow.session_id == session_id
+            )
+            if min_score is not None:
+                count_query = count_query.where(SearchSessionCandidateRow.overall_score >= min_score)
+            total_count = len(db.execute(count_query).scalars().all())
+
             total_pages = max(1, math.ceil(total_count / page_size)) if total_count else 1
             start = (page - 1) * page_size
-            end = start + page_size
 
+            rows_query = (
+                select(SearchSessionCandidateRow)
+                .where(SearchSessionCandidateRow.session_id == session_id)
+                .order_by(SearchSessionCandidateRow.rank)
+            )
+            if min_score is not None:
+                rows_query = rows_query.where(SearchSessionCandidateRow.overall_score >= min_score)
             candidate_rows = (
-                db.execute(
-                    select(SearchSessionCandidateRow)
-                    .where(SearchSessionCandidateRow.session_id == session_id)
-                    .order_by(SearchSessionCandidateRow.rank)
-                    .offset(start)
-                    .limit(page_size)
-                )
+                db.execute(rows_query.offset(start).limit(page_size))
                 .scalars()
                 .all()
             )
@@ -162,4 +184,5 @@ class SearchSessionStore:
                 has_next=(start + page_size) < total_count,
                 has_previous=page > 1,
                 rankings=rankings,
+                total_unfiltered_count=total_unfiltered_count,
             )

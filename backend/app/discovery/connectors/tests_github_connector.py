@@ -546,8 +546,7 @@ def test_discover_does_not_mark_error_on_non_401_search_failure():
 # These tests deliberately mock every profile/repos/orgs lookup to FAIL
 # (404) so the enrichment pipeline (already covered exhaustively above)
 # never runs -- each test below is isolated to proving exactly one thing
-# about the NEW fetch/dedup/stop-condition stage in
-# GitHubDiscoveryConnector._fetch_raw_candidates(), verified via
+# about the fetch/dedup/stop-condition stage of discover(), verified via
 # `connector.last_discovery_stats` (the same dict DiscoveryOrchestrator
 # reads and folds into the persisted Search Session) and via respx's own
 # call count/history.
@@ -784,3 +783,104 @@ def test_discover_preserves_deterministic_page_order_in_final_results():
     results = connector.discover(CanonicalJobRequirement(role="Developer", skills=[]))
 
     assert [r.name for r in results] == ["First Developer", "Second Developer"]
+
+
+# --- Sprint 35 Phase 6: stop auto-fetching pages once enough RELEVANT
+# candidates exist (not just enough raw search hits). ------------------------
+
+
+@respx.mock
+def test_discover_stops_fetching_pages_once_target_relevant_candidates_reached():
+    """Page 1 alone yields 2 genuinely relevant, fully-enrichable
+    candidates -- with target_relevant_candidates=2, discover() must stop
+    right there and never request page 2 at all, even though max_pages
+    would allow it."""
+    route = respx.get("https://api.github.com/search/users")
+    route.side_effect = [
+        httpx.Response(200, json={"items": [{"id": 1, "login": "dev-one"}, {"id": 2, "login": "dev-two"}]}),
+        httpx.Response(200, json={"items": [{"id": 3, "login": "dev-three"}]}),
+    ]
+    for login, display_name in (("dev-one", "Dev One"), ("dev-two", "Dev Two"), ("dev-three", "Dev Three")):
+        respx.get(f"https://api.github.com/users/{login}").mock(
+            return_value=httpx.Response(200, json={"login": login, "name": display_name})
+        )
+        respx.get(f"https://api.github.com/users/{login}/repos").mock(return_value=httpx.Response(200, json=[]))
+        respx.get(f"https://api.github.com/users/{login}/orgs").mock(return_value=httpx.Response(200, json=[]))
+
+    # role="Developer" with skills=[] -> empty requirement-token set ->
+    # relevance filter is skipped entirely -- both page-1 candidates are
+    # automatically "relevant" (see the ordering test above for the same
+    # technique), isolating this test to the target-count stop condition.
+    config = _stats_only_config(
+        search_page_size=2, max_search_pages=5, max_raw_candidates=100, target_relevant_candidates=2
+    )
+    connector = GitHubDiscoveryConnector(_configured_store(), intelligence_config=config)
+    results = connector.discover(CanonicalJobRequirement(role="Developer", skills=[]))
+
+    assert [r.name for r in results] == ["Dev One", "Dev Two"]
+    # Only 1 search call -- page 2 was never requested.
+    assert route.call_count == 1
+    stats = connector.last_discovery_stats
+    assert stats["github_pages_fetched"] == 1
+    assert stats["discovery_stop_reason"] == "target_relevant_candidates_reached"
+
+
+@respx.mock
+def test_discover_continues_to_a_second_page_when_first_page_yield_is_thin():
+    """Page 1 has 2 candidates but only 1 is relevant (the other has zero
+    matching evidence) -- with target_relevant_candidates=2, discover()
+    must automatically continue to page 2 rather than returning early or
+    requiring the recruiter to search again."""
+    route = respx.get("https://api.github.com/search/users")
+    route.side_effect = [
+        httpx.Response(200, json={"items": [{"id": 1, "login": "match-one"}, {"id": 2, "login": "no-match"}]}),
+        httpx.Response(200, json={"items": [{"id": 3, "login": "match-two"}]}),
+    ]
+    respx.get("https://api.github.com/users/match-one").mock(
+        return_value=httpx.Response(200, json={"login": "match-one", "name": "Match One"})
+    )
+    respx.get("https://api.github.com/users/match-one/repos").mock(
+        return_value=httpx.Response(
+            200, json=[{"name": "go-service", "language": "Go", "fork": False, "description": "A Golang service"}]
+        )
+    )
+    respx.get("https://api.github.com/users/match-one/orgs").mock(return_value=httpx.Response(200, json=[]))
+    respx.get("https://api.github.com/repos/match-one/go-service/readme").mock(
+        return_value=httpx.Response(404, text="Not Found")
+    )
+
+    respx.get("https://api.github.com/users/no-match").mock(
+        return_value=httpx.Response(200, json={"login": "no-match", "name": "No Match"})
+    )
+    respx.get("https://api.github.com/users/no-match/repos").mock(
+        return_value=httpx.Response(
+            200, json=[{"name": "cooking-blog", "language": "HTML", "fork": False, "description": "My recipes"}]
+        )
+    )
+    respx.get("https://api.github.com/users/no-match/orgs").mock(return_value=httpx.Response(200, json=[]))
+
+    respx.get("https://api.github.com/users/match-two").mock(
+        return_value=httpx.Response(200, json={"login": "match-two", "name": "Match Two"})
+    )
+    respx.get("https://api.github.com/users/match-two/repos").mock(
+        return_value=httpx.Response(
+            200,
+            json=[{"name": "golang-api", "language": "Go", "fork": False, "description": "Another Golang service"}],
+        )
+    )
+    respx.get("https://api.github.com/users/match-two/orgs").mock(return_value=httpx.Response(200, json=[]))
+    respx.get("https://api.github.com/repos/match-two/golang-api/readme").mock(
+        return_value=httpx.Response(404, text="Not Found")
+    )
+
+    config = _stats_only_config(
+        search_page_size=2, max_search_pages=5, max_raw_candidates=100, target_relevant_candidates=2
+    )
+    connector = GitHubDiscoveryConnector(_configured_store(), intelligence_config=config)
+    results = connector.discover(CanonicalJobRequirement(role="Senior Golang Developer", skills=["Golang"]))
+
+    assert [r.name for r in results] == ["Match One", "Match Two"]
+    assert route.call_count == 2
+    stats = connector.last_discovery_stats
+    assert stats["github_pages_fetched"] == 2
+    assert stats["discovery_stop_reason"] == "target_relevant_candidates_reached"

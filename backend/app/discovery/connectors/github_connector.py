@@ -65,40 +65,53 @@ change), and this is what lets GET /integrations/status (and, in a
 future sprint, a frontend "Reconnect GitHub" banner) reflect that instead
 of a search silently and permanently falling back to seed data.
 
-Sprint 34 (this change): discover() used to make exactly ONE call to
-GitHub's Search Users API (per_page capped at
-GitHubIntelligenceConfig.max_search_results, historically 10), so a
-query like "Java Developer" -- which can match thousands of real GitHub
-users -- only ever considered the first page. discover() now walks
-GitHub's own native pagination (the documented `page` query param, see
-GitHubClient.search_users()) across multiple pages, collecting a much
-larger raw candidate pool before deduplication, enrichment, matching, or
-ranking ever run. This is deliberately NOT lazy/on-demand enrichment --
-every stage after "collect the raw pool" (profile fetch, org/README
-fetch, semantic/token relevance filtering, enrichment) is completely
-unchanged; it just now runs over a bigger, deduplicated input list.
+Sprint 34: discover() used to make exactly ONE call to GitHub's Search
+Users API (per_page capped at GitHubIntelligenceConfig.max_search_results,
+historically 10), so a query like "Java Developer" -- which can match
+thousands of real GitHub users -- only ever considered the first page.
+discover() walked GitHub's own native pagination (the documented `page`
+query param, see GitHubClient.search_users()) across multiple pages,
+collecting a much larger raw candidate pool before deduplication,
+enrichment, matching, or ranking ever ran.
 
-Three independent limits (app/config.py: GITHUB_SEARCH_PAGE_SIZE,
-GITHUB_MAX_SEARCH_PAGES, GITHUB_MAX_RAW_CANDIDATES, surfaced here via
-GitHubIntelligenceConfig.search_page_size/max_search_pages/
-max_raw_candidates) bound the fetch: pages stop being requested when any
-of the sprint's defined stop conditions is hit (max pages reached, max
-raw candidates reached, GitHub returned no more results, a rate limit
-was hit, or the connector became unavailable mid-run). Whichever
-condition fired is recorded on `self.last_discovery_stats` -- a plain
-dict, not part of the DiscoveryConnector interface -- which
-DiscoveryOrchestrator.run() reads via getattr() and folds into that
-connector's ConnectorRunResult for this run (see app/discovery/
-orchestrator.py and app/discovery/models.py). Because DiscoveryRun is
-stored verbatim into Sprint 33's SearchSession.session_data, these
-discovery statistics land in the persisted Search Session with no
-changes needed anywhere in app/search_sessions/.
+Sprint 35 (this change, Phase 6 -- "auto-fetch more GitHub pages until
+enough good candidates"): Sprint 34 still fetched EVERY page up front
+(bounded only by max pages/max raw candidates) before enriching/filtering
+a single candidate. That meant a query that found 20 genuinely relevant
+candidates on page 1 alone would still pay for fetching pages 2-5's raw
+search results even though they were never needed. This sprint
+interleaves fetching and filtering PAGE BY PAGE: after each page's new
+(deduplicated) candidates are enriched and relevance-filtered, discover()
+checks whether it has already accumulated
+GitHubIntelligenceConfig.target_relevant_candidates (default 20) genuinely
+RELEVANT results -- not just raw search hits -- and if so, stops
+requesting further pages immediately. If a page's relevant yield is thin
+(e.g. only 2 of 30 candidates pass the relevance filter), the next page
+is fetched automatically, with no recruiter action needed, exactly like
+Sprint 34's other stop conditions (max pages, max raw candidates, no more
+results, rate limit, connector unavailable) -- "target_relevant_candidates
+reached" is simply one more entry in that same list, checked first
+because it is the cheapest way to stop: no more profile/repo/org/README
+calls are made once satisfied.
+
+Three independent hard ceilings (app/config.py: GITHUB_SEARCH_PAGE_SIZE,
+GITHUB_MAX_SEARCH_PAGES, GITHUB_MAX_RAW_CANDIDATES) still bound the fetch
+regardless of the target -- a query with almost no real matches must
+still terminate. Whichever stop condition actually fired is recorded on
+`self.last_discovery_stats` -- a plain dict, not part of the
+DiscoveryConnector interface -- which DiscoveryOrchestrator.run() reads
+via getattr() and folds into that connector's ConnectorRunResult for this
+run (see app/discovery/orchestrator.py and app/discovery/models.py).
+Because DiscoveryRun is stored verbatim into Sprint 33's
+SearchSession.session_data, these discovery statistics land in the
+persisted Search Session with no changes needed anywhere in
+app/search_sessions/.
 
 Deduplication is by GitHub's own immutable user id when the API supplies
 one (real /search/users responses always include it), falling back to
 `login` only when it's absent (as in some of this file's own hand-built
 test fixtures) -- never by any derived/mutable field. A duplicate seen
-on a later page is dropped before it ever reaches the enrichment loop
+on a later page is dropped before it ever reaches the enrichment step
 below, so no candidate is ever profile-fetched, org-fetched, or
 README-fetched twice for the same discover() call.
 """
@@ -239,98 +252,96 @@ class GitHubDiscoveryConnector:
     def is_available(self) -> bool:
         return self._config_store.is_configured()
 
-    def _fetch_raw_candidates(
-        self, client: GitHubClient, search_query: str
-    ) -> tuple[list[dict], dict]:
-        """Sprint 34: walks GitHub's native Search Users pagination
-        (`page`/`per_page`) collecting a deduplicated raw candidate pool,
-        stopping at whichever of the sprint's defined stop conditions
-        fires first. Returns (raw_users, stats) -- stats is exactly the
-        dict this module attaches to `self.last_discovery_stats`."""
-        page_size = self._intelligence_config.search_page_size
-        max_pages = self._intelligence_config.max_search_pages
-        max_raw = self._intelligence_config.max_raw_candidates
+    def _enrich_and_filter_one(
+        self,
+        client: GitHubClient,
+        user_summary: dict,
+        requirement_text: str,
+        requirement_tokens: set[str],
+        counters: dict,
+    ) -> CandidateImportRequest | None:
+        """Fetches one candidate's full profile/repos, applies the
+        relevance filter, enriches, and normalizes -- or returns None if
+        the profile fetch fails or the candidate isn't relevant. `counters`
+        is a plain dict this method increments in place (profiles_fetched,
+        profile_fetch_failures, filtered_out_no_evidence,
+        matched_semantically, matched_by_fallback_tokens,
+        semantic_unavailable) -- extracted from discover() unchanged except
+        for being callable once per page (Sprint 35) instead of once over
+        the whole pre-fetched raw pool (Sprint 34)."""
+        username = user_summary.get("login")
+        if not username:
+            return None
+        try:
+            profile = client.get_user(username)
+            repos = client.list_repos(username)
+        except GitHubAPIError:
+            counters["profile_fetch_failures"] += 1
+            return None
+        counters["profiles_fetched"] += 1
 
-        raw_users: list[dict] = []
-        seen_identities: set = set()
-        pages_fetched = 0
-        total_items_seen = 0  # across all pages, BEFORE dedup
-        stop_reason = "max_pages_reached"
+        if requirement_tokens:
+            evidence_text = " ".join(_repo_evidence_text(r) for r in repos)
+            is_relevant = False
+            match_method = None
 
-        for page_num in range(1, max_pages + 1):
+            # Sprint 20G: semantic comparison is the primary check -- it
+            # can recognize a candidate as relevant even when they share
+            # zero literal words with the query (e.g. "Computer Vision"
+            # <-> "YOLO, OpenCV").
             try:
-                items, _total_count = client.search_users(search_query, per_page=page_size, page=page_num)
-            except GitHubAPIError as exc:
-                logger.info(
-                    "github.discover.search_failed",
-                    extra={"query": search_query, "page": page_num, "error": str(exc)},
-                )
-                if exc.status_code == 401:
-                    # Sprint 32: a token that passed verification at
-                    # configure-time can still go bad later (revoked,
-                    # expired, org policy change). Record that here so
-                    # GET /integrations/status -- and, in a future
-                    # sprint, a frontend "Reconnect GitHub" banner --
-                    # reflects reality instead of a search silently and
-                    # permanently falling back to seed data with no
-                    # visible explanation.
-                    self._config_store.mark_error(
-                        "GitHub authentication failed (401) during search -- "
-                        "the token may have been revoked or expired. Reconfigure it via "
-                        "POST /integrations/github/configure."
-                    )
-                    stop_reason = "connector_unavailable"
-                elif exc.status_code == 403:
-                    # GitHubClient already retries a primary rate-limit
-                    # 403 once internally (waiting for X-RateLimit-Reset)
-                    # -- a 403 reaching here means that retry ALSO hit
-                    # the limit, so further pagination isn't attempted
-                    # this run rather than waiting indefinitely.
-                    stop_reason = "rate_limited"
-                else:
-                    stop_reason = "search_error"
-                break
+                is_relevant, _similarity = self._semantic_matcher.is_relevant(requirement_text, evidence_text)
+                match_method = "semantic"
+            except EmbeddingUnavailableError as exc:
+                # Availability must never depend on one remote call
+                # succeeding -- fall back to Sprint 20F's literal-token
+                # evidence match instead of dropping every candidate.
+                counters["semantic_unavailable"] = True
+                logger.info("github.discover.semantic_unavailable", extra={"error": str(exc)})
+                is_relevant = any(token in evidence_text for token in requirement_tokens)
+                match_method = "fallback_tokens"
 
-            pages_fetched += 1
+            if not is_relevant:
+                counters["filtered_out_no_evidence"] += 1
+                return None
+            if match_method == "semantic":
+                counters["matched_semantically"] += 1
+            else:
+                counters["matched_by_fallback_tokens"] += 1
 
-            if not items:
-                stop_reason = "no_more_results"
-                break
+        orgs: list[dict] = []
+        try:
+            orgs = client.list_orgs(username)
+        except GitHubAPIError:
+            # Public org list is enrichment, not a search prerequisite --
+            # a failure here must not drop an otherwise-matched candidate.
+            orgs = []
 
-            total_items_seen += len(items)
-
-            hit_cap = False
-            for item in items:
-                identity = item.get("id", item.get("login"))
-                if identity is None or identity in seen_identities:
+        readmes: dict[str, str] = {}
+        if self._intelligence_config.enable_repository_analysis:
+            # Only fetch READMEs for a handful of top (most-starred) repos
+            # -- README text is used for skill-evidence only, so this
+            # stays a best-effort, bounded fan-out.
+            top_repos = sorted(
+                (r for r in repos if not r.get("fork", False)),
+                key=lambda r: r.get("stargazers_count", 0) or 0,
+                reverse=True,
+            )[:_README_FETCH_LIMIT]
+            for repo in top_repos:
+                repo_name = repo.get("name")
+                if not repo_name:
                     continue
-                seen_identities.add(identity)
-                raw_users.append(item)
-                if len(raw_users) >= max_raw:
-                    hit_cap = True
-                    break
+                try:
+                    text = client.get_readme(
+                        username, repo_name, max_bytes=self._intelligence_config.max_readme_bytes
+                    )
+                except GitHubAPIError:
+                    text = None
+                if text:
+                    readmes[repo_name] = text
 
-            if hit_cap:
-                stop_reason = "max_raw_candidates_reached"
-                break
-            if len(items) < page_size:
-                # GitHub's own signal that this was the last page --
-                # native pagination, not a custom heuristic.
-                stop_reason = "no_more_results"
-                break
-            if pages_fetched >= max_pages:
-                stop_reason = "max_pages_reached"
-                break
-        else:
-            stop_reason = "max_pages_reached"
-
-        stats = {
-            "github_pages_fetched": pages_fetched,
-            "raw_candidates_found": total_items_seen,
-            "raw_candidates_after_dedup": len(raw_users),
-            "discovery_stop_reason": stop_reason,
-        }
-        return raw_users, stats
+        enrichment = self._enrichment_engine.enrich(profile, repos, orgs=orgs, readmes=readmes)
+        return normalize_github_candidate(profile, repos, enrichment=enrichment)
 
     def discover(self, requirement: CanonicalJobRequirement) -> list[CandidateImportRequest]:
         if not self.is_available():
@@ -350,122 +361,129 @@ class GitHubDiscoveryConnector:
             query = " ".join(t for t in query_terms if t and t.strip()).strip() or "developer"
             search_query = f"{query} type:user"
 
-            # Sprint 34: raw_users is already deduplicated (by GitHub's
-            # immutable user id, falling back to login) and capped at
-            # GITHUB_MAX_RAW_CANDIDATES across however many pages were
-            # fetched -- everything below this line is completely
-            # unchanged from before Sprint 34, just operating over a much
-            # larger input list than the old single-page fetch produced.
-            raw_users, discovery_stats = self._fetch_raw_candidates(client, search_query)
-            self.last_discovery_stats = discovery_stats
-            users_found = discovery_stats["raw_candidates_found"]
-
-            if not raw_users:
-                logger.info(
-                    "github.discover.trace",
-                    extra={
-                        "search_query": search_query,
-                        "users_found": 0,
-                        "candidates_returned": 0,
-                        **discovery_stats,
-                    },
-                )
-                return []
+            page_size = self._intelligence_config.search_page_size
+            max_pages = self._intelligence_config.max_search_pages
+            max_raw = self._intelligence_config.max_raw_candidates
+            target_relevant = self._intelligence_config.target_relevant_candidates
 
             requirement_text = _requirement_text(requirement)
             # Sprint 20F fallback vocabulary -- derived entirely from THIS
             # query's own text, no fixed skills/roles/technologies table.
             requirement_tokens = _tokenize(requirement.role, *requirement.skills)
+
+            seen_identities: set = set()
             results: list[CandidateImportRequest] = []
-            profiles_fetched = 0
-            profile_fetch_failures = 0
-            filtered_out_no_evidence = 0
-            matched_semantically = 0
-            matched_by_fallback_tokens = 0
-            semantic_unavailable = False
+            pages_fetched = 0
+            total_items_seen = 0  # across all pages, BEFORE dedup
+            raw_after_dedup = 0
+            counters = {
+                "profiles_fetched": 0,
+                "profile_fetch_failures": 0,
+                "filtered_out_no_evidence": 0,
+                "matched_semantically": 0,
+                "matched_by_fallback_tokens": 0,
+                "semantic_unavailable": False,
+            }
+            stop_reason = "max_pages_reached"
 
-            for user_summary in raw_users:
-                username = user_summary.get("login")
-                if not username:
-                    continue
+            # Sprint 35: fetch AND filter page by page, so pagination can
+            # stop the moment enough RELEVANT candidates exist -- no
+            # blind up-front multi-page fetch (Sprint 34's approach)
+            # before a single profile is even inspected.
+            for page_num in range(1, max_pages + 1):
                 try:
-                    profile = client.get_user(username)
-                    repos = client.list_repos(username)
-                except GitHubAPIError:
-                    profile_fetch_failures += 1
-                    continue
-                profiles_fetched += 1
-
-                if requirement_tokens:
-                    evidence_text = " ".join(_repo_evidence_text(r) for r in repos)
-                    is_relevant = False
-                    match_method = None
-
-                    # Sprint 20G: semantic comparison is the primary check
-                    # -- it can recognize a candidate as relevant even
-                    # when they share zero literal words with the query
-                    # (e.g. "Computer Vision" <-> "YOLO, OpenCV").
-                    try:
-                        is_relevant, similarity = self._semantic_matcher.is_relevant(
-                            requirement_text, evidence_text
+                    items, _total_count = client.search_users(search_query, per_page=page_size, page=page_num)
+                except GitHubAPIError as exc:
+                    logger.info(
+                        "github.discover.search_failed",
+                        extra={"query": search_query, "page": page_num, "error": str(exc)},
+                    )
+                    if exc.status_code == 401:
+                        # Sprint 32: a token that passed verification at
+                        # configure-time can still go bad later (revoked,
+                        # expired, org policy change). Record that here so
+                        # GET /integrations/status -- and, in a future
+                        # sprint, a frontend "Reconnect GitHub" banner --
+                        # reflects reality instead of a search silently
+                        # and permanently falling back to seed data with
+                        # no visible explanation.
+                        self._config_store.mark_error(
+                            "GitHub authentication failed (401) during search -- "
+                            "the token may have been revoked or expired. Reconfigure it via "
+                            "POST /integrations/github/configure."
                         )
-                        match_method = "semantic"
-                    except EmbeddingUnavailableError as exc:
-                        # Availability must never depend on one remote
-                        # call succeeding -- fall back to Sprint 20F's
-                        # literal-token evidence match instead of
-                        # dropping every candidate.
-                        semantic_unavailable = True
-                        logger.info(
-                            "github.discover.semantic_unavailable",
-                            extra={"error": str(exc)},
-                        )
-                        is_relevant = any(token in evidence_text for token in requirement_tokens)
-                        match_method = "fallback_tokens"
-
-                    if not is_relevant:
-                        filtered_out_no_evidence += 1
-                        continue
-                    if match_method == "semantic":
-                        matched_semantically += 1
+                        stop_reason = "connector_unavailable"
+                    elif exc.status_code == 403:
+                        # GitHubClient already retries a primary
+                        # rate-limit 403 once internally (waiting for
+                        # X-RateLimit-Reset) -- a 403 reaching here means
+                        # that retry ALSO hit the limit, so further
+                        # pagination isn't attempted this run rather than
+                        # waiting indefinitely.
+                        stop_reason = "rate_limited"
                     else:
-                        matched_by_fallback_tokens += 1
+                        stop_reason = "search_error"
+                    break
 
-                orgs: list[dict] = []
-                try:
-                    orgs = client.list_orgs(username)
-                except GitHubAPIError:
-                    # Public org list is enrichment, not a search
-                    # prerequisite -- a failure here must not drop an
-                    # otherwise-matched candidate.
-                    orgs = []
+                pages_fetched += 1
 
-                readmes: dict[str, str] = {}
-                if self._intelligence_config.enable_repository_analysis:
-                    # Only fetch READMEs for a handful of top (most-starred)
-                    # repos -- README text is used for skill-evidence only,
-                    # so this stays a best-effort, bounded fan-out.
-                    top_repos = sorted(
-                        (r for r in repos if not r.get("fork", False)),
-                        key=lambda r: r.get("stargazers_count", 0) or 0,
-                        reverse=True,
-                    )[:_README_FETCH_LIMIT]
-                    for repo in top_repos:
-                        repo_name = repo.get("name")
-                        if not repo_name:
-                            continue
-                        try:
-                            text = client.get_readme(
-                                username, repo_name, max_bytes=self._intelligence_config.max_readme_bytes
-                            )
-                        except GitHubAPIError:
-                            text = None
-                        if text:
-                            readmes[repo_name] = text
+                if not items:
+                    stop_reason = "no_more_results"
+                    break
 
-                enrichment = self._enrichment_engine.enrich(profile, repos, orgs=orgs, readmes=readmes)
+                total_items_seen += len(items)
 
-                results.append(normalize_github_candidate(profile, repos, enrichment=enrichment))
+                new_users_this_page: list[dict] = []
+                hit_raw_cap = False
+                for item in items:
+                    identity = item.get("id", item.get("login"))
+                    if identity is None or identity in seen_identities:
+                        continue
+                    seen_identities.add(identity)
+                    raw_after_dedup += 1
+                    new_users_this_page.append(item)
+                    if raw_after_dedup >= max_raw:
+                        hit_raw_cap = True
+                        break
+
+                # Sprint 35: enrich/filter only the NEW candidates from
+                # THIS page, immediately -- stop mid-page the instant the
+                # relevant-candidate target is reached, so a page that
+                # already has enough good matches never pays for
+                # profile/repo/org/README calls on the rest of that page.
+                for user_summary in new_users_this_page:
+                    candidate = self._enrich_and_filter_one(
+                        client, user_summary, requirement_text, requirement_tokens, counters
+                    )
+                    if candidate is not None:
+                        results.append(candidate)
+                    if len(results) >= target_relevant:
+                        break
+
+                if len(results) >= target_relevant:
+                    stop_reason = "target_relevant_candidates_reached"
+                    break
+                if hit_raw_cap:
+                    stop_reason = "max_raw_candidates_reached"
+                    break
+                if len(items) < page_size:
+                    # GitHub's own signal that this was the last page --
+                    # native pagination, not a custom heuristic.
+                    stop_reason = "no_more_results"
+                    break
+                if pages_fetched >= max_pages:
+                    stop_reason = "max_pages_reached"
+                    break
+            else:
+                stop_reason = "max_pages_reached"
+
+            discovery_stats = {
+                "github_pages_fetched": pages_fetched,
+                "raw_candidates_found": total_items_seen,
+                "raw_candidates_after_dedup": raw_after_dedup,
+                "discovery_stop_reason": stop_reason,
+            }
+            self.last_discovery_stats = discovery_stats
 
             elapsed_ms = round((time.monotonic() - started_at) * 1000, 1)
             # Full execution trace for this discover() call, per-stage, so
@@ -476,13 +494,13 @@ class GitHubDiscoveryConnector:
                 extra={
                     "search_query": search_query,
                     "requirement_tokens": sorted(requirement_tokens),
-                    "users_found": users_found,
-                    "profiles_fetched": profiles_fetched,
-                    "profile_fetch_failures": profile_fetch_failures,
-                    "filtered_out_no_evidence": filtered_out_no_evidence,
-                    "matched_semantically": matched_semantically,
-                    "matched_by_fallback_tokens": matched_by_fallback_tokens,
-                    "semantic_unavailable": semantic_unavailable,
+                    "users_found": total_items_seen,
+                    "profiles_fetched": counters["profiles_fetched"],
+                    "profile_fetch_failures": counters["profile_fetch_failures"],
+                    "filtered_out_no_evidence": counters["filtered_out_no_evidence"],
+                    "matched_semantically": counters["matched_semantically"],
+                    "matched_by_fallback_tokens": counters["matched_by_fallback_tokens"],
+                    "semantic_unavailable": counters["semantic_unavailable"],
                     "candidates_returned": len(results),
                     "elapsed_ms": elapsed_ms,
                     **discovery_stats,

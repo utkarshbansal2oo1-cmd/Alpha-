@@ -125,6 +125,22 @@ class SmartSearchResponse(BaseModel):
     discovery: DiscoveryRun
     rankings: list[RankedCandidate]
 
+    # --- Sprint 35 (Phase 1 + Phase 2) additions ----------------------------
+    # relevance_threshold: the score (0-100) below which a match is
+    # considered "weak" for THIS search -- adaptive to pool size (see
+    # MatchingConfig.adaptive_relevance_threshold). total_all_candidates/
+    # weak_match_count describe the FULL ranked pool for this session,
+    # regardless of `include_weak_matches` -- so the frontend can always
+    # render "Show N weaker matches" even on a filtered page.
+    # seed_fallback_used records whether Phase 1's GitHub-first/seed-as-
+    # fallback decision actually pulled in seed_data candidates for this
+    # search (False whenever live discovery alone was sufficient).
+    relevance_threshold: float
+    total_all_candidates: int
+    weak_match_count: int
+    include_weak_matches: bool
+    seed_fallback_used: bool
+
 
 # --- Dependency injection ----------------------------------------------------
 # Same pattern search_pipeline.py already established: plain provider
@@ -222,6 +238,7 @@ def smart_search(
     ranking_engine: RankingEngine = Depends(get_ranking_engine),
     query_translator: ConnectorQueryTranslator = Depends(get_query_translator),
     session_store: SearchSessionStore = Depends(get_search_session_store),
+    matching_config: MatchingConfig = Depends(get_matching_config),
     _recruiter: RecruiterRow = Depends(get_current_recruiter),  # Sprint 30: no-op unless REQUIRE_AUTH is on
 ) -> SmartSearchResponse:
     try:
@@ -271,7 +288,37 @@ def smart_search(
         # rather than reusing pre-discovery scores.
         matches = matching_engine.score_all(candidates, requirement, plan, raw_query=payload.query)
 
-    rankings = ranking_engine.rank(candidates, matches)
+    # --- Sprint 35 Phase 1: seed data is a FALLBACK, never a default
+    # participant. Live-discovered/live-sourced candidates (source !=
+    # "seed_data") are ranked and shown on their own merits first; the
+    # bundled seed dataset is appended ONLY when live candidates alone
+    # don't clear the relevance bar for enough of them -- so a query with
+    # 87 real GitHub matches returns 87 GitHub / 0 seed, while a query
+    # with only 8 weak live matches still gets topped up to a usable
+    # count instead of returning a near-empty page.
+    matches_by_id = {m.candidate_id: m for m in matches}
+    seed_candidates = [c for c in candidates if c.source == "seed_data"]
+    live_candidates = [c for c in candidates if c.source != "seed_data"]
+    live_matches = [matches_by_id[c.id] for c in live_candidates]
+
+    # Sprint 35 Phase 2: adaptive relevance threshold -- a small pool
+    # tolerates weaker matches (better a 45%-confidence hit than nothing),
+    # a large pool can afford to be pickier. Sized off the FULL live pool,
+    # since that's the pool this decision is actually about.
+    relevance_threshold = matching_config.adaptive_relevance_threshold(len(live_candidates))
+    good_live_count = sum(1 for m in live_matches if m.overall_score >= relevance_threshold)
+
+    seed_fallback_used = False
+    if seed_candidates and good_live_count < matching_config.min_candidate_threshold:
+        seed_fallback_used = True
+        seed_matches = [matches_by_id[c.id] for c in seed_candidates]
+        final_candidates = live_candidates + seed_candidates
+        final_matches = live_matches + seed_matches
+    else:
+        final_candidates = live_candidates
+        final_matches = live_matches
+
+    rankings = ranking_engine.rank(final_candidates, final_matches)
 
     # Sprint 33: this is the ONLY place the full pipeline's ranked output
     # is computed. Persist it now -- every page of this search, including
@@ -284,11 +331,19 @@ def smart_search(
             "requirement": requirement.model_dump(mode="json"),
             "search_plan": plan.model_dump(mode="json"),
             "discovery": discovery_run.model_dump(mode="json"),
+            # Sprint 35: persisted so GET /api/search/session/{id} can
+            # reproduce the exact same threshold/fallback facts without
+            # ever re-running Matching or the Phase 1 decision above.
+            "relevance_threshold": relevance_threshold,
+            "seed_fallback_used": seed_fallback_used,
         },
         rankings=rankings,
     )
 
-    page = session_store.get_page(session_id, page=payload.page, page_size=payload.page_size)
+    min_score = None if payload.include_weak_matches else relevance_threshold
+    page = session_store.get_page(
+        session_id, page=payload.page, page_size=payload.page_size, min_score=min_score
+    )
     page_candidates, page_rankings = _candidates_for_rankings(page.rankings, repository)
 
     return SmartSearchResponse(
@@ -305,6 +360,11 @@ def smart_search(
         has_previous=page.has_previous,
         discovery=discovery_run,
         rankings=page_rankings,
+        relevance_threshold=relevance_threshold,
+        total_all_candidates=page.total_unfiltered_count,
+        weak_match_count=page.total_unfiltered_count - page.total_count,
+        include_weak_matches=payload.include_weak_matches,
+        seed_fallback_used=seed_fallback_used,
     )
 
 
@@ -313,6 +373,7 @@ def get_search_session_page(
     session_id: str,
     page: int = 1,
     page_size: int = 20,
+    include_weak_matches: bool = False,
     repository: CandidateRepository = Depends(get_candidate_repository),
     session_store: SearchSessionStore = Depends(get_search_session_store),
     _recruiter: RecruiterRow = Depends(get_current_recruiter),
@@ -322,14 +383,31 @@ def get_search_session_page(
     SearchPlanner, DiscoveryOrchestrator, MatchingEngine, or RankingEngine
     -- every one of those ran exactly once, back in the POST that created
     this session. Only the CandidateRepository is used here, to re-fetch
-    the actual Candidate objects for this page's slice of ranked ids."""
+    the actual Candidate objects for this page's slice of ranked ids.
+
+    Sprint 35 Phase 2: `include_weak_matches` re-applies the SAME
+    relevance_threshold computed (and persisted) at POST time -- via
+    session_data["relevance_threshold"] -- rather than recomputing
+    anything, so a weak match hidden on page 1 stays hidden (or shown)
+    consistently across every subsequent page of the same session."""
     if page < 1:
         raise HTTPException(status_code=422, detail="page must be >= 1")
     if page_size < 1 or page_size > 50:
         raise HTTPException(status_code=422, detail="page_size must be between 1 and 50")
 
+    # A quick, unfiltered peek at session_data to know the persisted
+    # threshold before deciding what min_score to apply -- get_page()
+    # itself does the actual (possibly filtered) candidate query below.
     try:
-        session_page = session_store.get_page(session_id, page=page, page_size=page_size)
+        probe = session_store.get_page(session_id, page=1, page_size=1)
+    except SearchSessionNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    relevance_threshold = probe.session_data.get("relevance_threshold", 0.0)
+    seed_fallback_used = probe.session_data.get("seed_fallback_used", False)
+
+    min_score = None if include_weak_matches else relevance_threshold
+    try:
+        session_page = session_store.get_page(session_id, page=page, page_size=page_size, min_score=min_score)
     except SearchSessionNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
 
@@ -350,4 +428,9 @@ def get_search_session_page(
         has_previous=session_page.has_previous,
         discovery=DiscoveryRun.model_validate(session_data["discovery"]),
         rankings=rankings,
+        relevance_threshold=relevance_threshold,
+        total_all_candidates=session_page.total_unfiltered_count,
+        weak_match_count=session_page.total_unfiltered_count - session_page.total_count,
+        include_weak_matches=include_weak_matches,
+        seed_fallback_used=seed_fallback_used,
     )

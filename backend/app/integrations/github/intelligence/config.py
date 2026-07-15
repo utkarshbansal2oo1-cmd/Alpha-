@@ -57,11 +57,19 @@ class GitHubIntelligenceConfig:
     max_search_pages: int = 5
     max_raw_candidates: int = 500
 
+    # Sprint 35: Phase 6 (auto-expand GitHub discovery). Once discover()
+    # has accumulated this many RELEVANT (post-filter, not just raw)
+    # candidates, it stops requesting further pages -- see
+    # github_connector.py's discover() docstring for the full page-by-page
+    # fetch+filter interleaving this enables.
+    target_relevant_candidates: int = 20
+
 
 _default_config = GitHubIntelligenceConfig(
     search_page_size=settings.GITHUB_SEARCH_PAGE_SIZE,
     max_search_pages=settings.GITHUB_MAX_SEARCH_PAGES,
     max_raw_candidates=settings.GITHUB_MAX_RAW_CANDIDATES,
+    target_relevant_candidates=settings.GITHUB_TARGET_RELEVANT_CANDIDATES,
 )
 
 

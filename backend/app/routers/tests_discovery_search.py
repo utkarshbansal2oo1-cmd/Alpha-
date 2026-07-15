@@ -141,7 +141,17 @@ def test_smart_search_returns_all_ten_discovered_candidates_not_a_reduced_subset
     app.dependency_overrides[get_connector_registry] = lambda: _FakeConnectorRegistry([_TenCandidateConnector()])
 
     try:
-        resp = client.post("/api/search/smart", json={"query": "Senior Golang Developer with Golang"})
+        # Sprint 35 Phase 2: role="Unknown"/skills=["Go"] vs a "Senior
+        # Golang Developer"/"Golang" requirement score BELOW the adaptive
+        # relevance threshold (no exact role/skill token overlap), so by
+        # default these would be hidden as weak matches. This test's own
+        # concern -- discovery not silently truncating the raw pool -- is
+        # orthogonal to that visibility feature, so include_weak_matches
+        # isolates it (same list of 10 candidates either way).
+        resp = client.post(
+            "/api/search/smart",
+            json={"query": "Senior Golang Developer with Golang", "include_weak_matches": True},
+        )
         assert resp.status_code == 200
         body = resp.json()
 
@@ -295,5 +305,120 @@ def test_no_duplicate_candidate_within_one_session(tmp_path):
         body = resp.json()
         ids = [c["id"] for c in body["candidates"]]
         assert len(ids) == len(set(ids))
+    finally:
+        app.dependency_overrides.clear()
+
+
+# --- Sprint 35 Phase 1 (seed-as-fallback) + Phase 2 (relevance threshold) ---
+
+
+class _WeakMatchConnector:
+    """Live candidates whose role/skills share nothing with the
+    requirement -- guaranteed poor matches, so Phase 1's "are there
+    enough GOOD live candidates" check reads zero regardless of the
+    configured threshold."""
+
+    name = "github"
+    priority = 15
+
+    def is_available(self):
+        return True
+
+    def discover(self, requirement):
+        return [
+            CandidateImportRequest(
+                name=f"Unrelated Dev {i}",
+                role="Totally Unrelated Field",
+                skills=["Basket Weaving"],
+                source_type="github",
+                public_profile_url=f"https://github.com/unrelated{i}",
+            )
+            for i in range(2)
+        ]
+
+
+def test_seed_fallback_used_when_live_candidates_are_weak(tmp_path):
+    client, repo, config_store = _client_with_repo(tmp_path)
+    _seed_candidates(repo, 5)  # role="Product Manager", skills=["Roadmapping"] -- strong seed matches
+    fake_llm = FakeLLMClient(responses=['{"role": "Product Manager", "skills": ["Roadmapping"]}'])
+    app.dependency_overrides[get_query_understanding_service] = lambda: QueryUnderstandingService(llm_client=fake_llm)
+    app.dependency_overrides[get_connector_registry] = lambda: _FakeConnectorRegistry([_WeakMatchConnector()])
+
+    try:
+        resp = client.post("/api/search/smart", json={"query": "Product Manager"})
+        assert resp.status_code == 200
+        body = resp.json()
+
+        # Live discovery alone (2 weak matches) isn't enough -- seed data
+        # must have been appended as a fallback.
+        assert body["seed_fallback_used"] is True
+        sources = {c["source"] for c in body["candidates"]}
+        assert "seed_data" in sources
+        assert body["total_count"] >= 5  # at least the 5 seed candidates present
+    finally:
+        app.dependency_overrides.clear()
+
+
+class _TenStrongMatchConnector:
+    """Unlike _TenCandidateConnector (role="Unknown"), these candidates'
+    role/skills are an EXACT match for the requirement below -- genuinely
+    strong live matches, guaranteed to clear the relevance threshold."""
+
+    name = "github"
+    priority = 15
+
+    def is_available(self):
+        return True
+
+    def discover(self, requirement):
+        return [
+            CandidateImportRequest(
+                name=f"Golang Expert {i}",
+                role="Senior Golang Developer",
+                skills=["Golang"],
+                source_type="github",
+                public_profile_url=f"https://github.com/golangexpert{i}",
+            )
+            for i in range(10)
+        ]
+
+
+def test_seed_not_used_when_live_candidates_are_already_strong(tmp_path):
+    client, repo, config_store = _client_with_repo(tmp_path)
+    _seed_candidates(repo, 5)  # present, but should never surface below
+    fake_llm = FakeLLMClient(responses=['{"role": "Senior Golang Developer", "skills": ["Golang"]}'])
+    app.dependency_overrides[get_query_understanding_service] = lambda: QueryUnderstandingService(llm_client=fake_llm)
+    app.dependency_overrides[get_connector_registry] = lambda: _FakeConnectorRegistry([_TenStrongMatchConnector()])
+
+    try:
+        resp = client.post("/api/search/smart", json={"query": "Senior Golang Developer with Golang"})
+        assert resp.status_code == 200
+        body = resp.json()
+
+        # 10 strong live (github) matches easily clear min_candidate_threshold
+        # -- seed data (unrelated "Product Manager" profiles) must NOT be
+        # appended just because it exists.
+        assert body["seed_fallback_used"] is False
+        sources = {c["source"] for c in body["candidates"]}
+        assert "seed_data" not in sources
+        assert body["count"] == 10
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_smart_search_response_includes_relevance_threshold_fields(tmp_path):
+    client, repo, config_store = _client_with_repo(tmp_path)
+    _seed_candidates(repo, 3)
+    fake_llm = FakeLLMClient(responses=['{"role": "Product Manager", "skills": ["Roadmapping"]}'])
+    app.dependency_overrides[get_query_understanding_service] = lambda: QueryUnderstandingService(llm_client=fake_llm)
+
+    try:
+        resp = client.post("/api/search/smart", json={"query": "Product Manager"})
+        assert resp.status_code == 200
+        body = resp.json()
+        assert isinstance(body["relevance_threshold"], (int, float))
+        assert "total_all_candidates" in body
+        assert "weak_match_count" in body
+        assert body["include_weak_matches"] is False
     finally:
         app.dependency_overrides.clear()

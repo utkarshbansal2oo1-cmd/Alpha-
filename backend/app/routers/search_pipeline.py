@@ -57,6 +57,12 @@ class SearchQueryRequest(BaseModel):
     query: str = Field(..., description="Recruiter's free-text hiring requirement")
     page: int = Field(1, ge=1, description="1-indexed page number (smart search only)")
     page_size: int = Field(20, ge=1, le=50, description="Candidates per page (smart search only)")
+    # Sprint 35 Phase 2: whether to include below-relevance-threshold
+    # matches in the response (smart search only) -- inert here, same
+    # pattern as page/page_size above.
+    include_weak_matches: bool = Field(
+        False, description="Include below-threshold weak matches (smart search only)"
+    )
 
 
 class SearchQueryResponse(BaseModel):

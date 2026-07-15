@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from app.config import settings
+
 # GitHub's own hard cap on README size is much larger than this; this is
 # a deliberately conservative "safe limit" so a single oversized README
 # can't make one candidate's enrichment noticeably slower than the rest
@@ -32,10 +34,35 @@ class GitHubIntelligenceConfig:
     # connector-imposed choice, not a GitHub API limitation, so it belongs
     # here as a tunable rather than a magic number. Default of 10 preserves
     # the exact behavior every existing test and live run assumed.
+    #
+    # Sprint 34: superseded as the knob that drives discovery volume --
+    # github_connector.py's discover() no longer reads this field at all.
+    # Its two jobs (how many results per GitHub search page, and how many
+    # total raw candidates to collect) are now separate, dedicated fields
+    # below (`search_page_size`, `max_raw_candidates`), each independently
+    # configurable, because "results per page" and "total candidates
+    # collected across many pages" are genuinely different knobs once
+    # pagination exists. Left defined here (default unchanged) purely so
+    # any existing code constructing `GitHubIntelligenceConfig(max_search_results=N)`
+    # still works -- it's just inert now.
     max_search_results: int = 10
 
+    # Sprint 34: multi-page GitHub Search Users discovery. Sourced from
+    # app/config.py's GITHUB_SEARCH_PAGE_SIZE / GITHUB_MAX_SEARCH_PAGES /
+    # GITHUB_MAX_RAW_CANDIDATES by get_github_intelligence_config() below
+    # -- kept as plain dataclass fields (rather than reading `settings`
+    # directly in github_connector.py) so tests can override them per
+    # case, same pattern as every other field on this dataclass.
+    search_page_size: int = 100
+    max_search_pages: int = 5
+    max_raw_candidates: int = 500
 
-_default_config = GitHubIntelligenceConfig()
+
+_default_config = GitHubIntelligenceConfig(
+    search_page_size=settings.GITHUB_SEARCH_PAGE_SIZE,
+    max_search_pages=settings.GITHUB_MAX_SEARCH_PAGES,
+    max_raw_candidates=settings.GITHUB_MAX_RAW_CANDIDATES,
+)
 
 
 def get_github_intelligence_config() -> GitHubIntelligenceConfig:

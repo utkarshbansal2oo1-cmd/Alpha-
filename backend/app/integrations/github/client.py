@@ -91,12 +91,24 @@ class GitHubClient:
         scopes = [s.strip() for s in scopes_header.split(",") if s.strip()]
         return response.json(), scopes
 
-    def search_users(self, query: str, per_page: int = 30) -> list[dict]:
-        """GET /search/users -- returns the `items` array from GitHub's
-        search response envelope (which also carries total_count and
-        incomplete_results, not needed here)."""
-        response = self._request("GET", "/search/users", params={"q": query, "per_page": per_page})
-        return response.json().get("items", [])
+    def search_users(self, query: str, per_page: int = 30, page: int = 1) -> tuple[list[dict], int]:
+        """GET /search/users -- https://docs.github.com/en/rest/search/search#search-users.
+
+        Sprint 34: accepts `page` (GitHub's own documented, native 1-indexed
+        pagination via the `page` query param -- no custom pagination
+        scheme) and now returns a `(items, total_count)` tuple instead of
+        just `items`, so a caller doing multi-page discovery
+        (github_connector.py's discover()) can tell it has reached the
+        last page (fewer than `per_page` items came back, or `items` is
+        empty) without an extra request. `total_count` is GitHub's own
+        reported match count for the query -- note GitHub caps how many
+        of those are actually retrievable via pagination at 1000
+        regardless of total_count's value."""
+        response = self._request(
+            "GET", "/search/users", params={"q": query, "per_page": per_page, "page": page}
+        )
+        body = response.json()
+        return body.get("items", []), body.get("total_count", 0)
 
     def get_user(self, username: str) -> dict:
         response = self._request("GET", f"/users/{username}")

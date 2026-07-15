@@ -100,5 +100,23 @@ class Settings(BaseSettings):
     # value of this to source control.
     APP_ENCRYPTION_KEY: str = ""
 
+    # Sprint 34: GitHub discovery used to fetch a single page of Search
+    # Users results (capped at GitHubIntelligenceConfig.max_search_results,
+    # historically as low as 10) -- a real query like "Java Developer" can
+    # match thousands of users, so a one-page fetch silently discarded
+    # almost the entire candidate pool. These three settings govern
+    # GitHub's OWN native pagination (the documented `page`/`per_page`
+    # query params on GET /search/users -- no custom pagination scheme is
+    # invented): how many results per page, how many pages to fetch at
+    # most, and a hard ceiling on the deduplicated raw pool regardless of
+    # how many pages that would take. Defaults (100/5/500) mean a single
+    # search can surface up to 500 raw GitHub users before enrichment,
+    # filtering, matching, and ranking narrow that down -- a large jump
+    # from the old ~10, while still bounded so one search can't run away
+    # fetching thousands of profiles/repos/orgs calls.
+    GITHUB_SEARCH_PAGE_SIZE: int = 100
+    GITHUB_MAX_SEARCH_PAGES: int = 5
+    GITHUB_MAX_RAW_CANDIDATES: int = 500
+
 
 settings = Settings()

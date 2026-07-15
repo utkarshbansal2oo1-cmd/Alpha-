@@ -21,8 +21,21 @@ def test_search_users_returns_items_array():
     respx.get("https://api.github.com/search/users").mock(
         return_value=httpx.Response(200, json={"total_count": 1, "items": [{"login": "octocat"}]})
     )
-    users = _client().search_users("octocat type:user")
+    # Sprint 34: now returns (items, total_count) so multi-page discovery
+    # can tell whether more results exist without an extra request.
+    users, total_count = _client().search_users("octocat type:user")
     assert users == [{"login": "octocat"}]
+    assert total_count == 1
+
+
+@respx.mock
+def test_search_users_passes_page_param_for_pagination():
+    route = respx.get("https://api.github.com/search/users").mock(
+        return_value=httpx.Response(200, json={"total_count": 0, "items": []})
+    )
+    _client().search_users("octocat type:user", per_page=50, page=3)
+    assert route.calls.last.request.url.params["page"] == "3"
+    assert route.calls.last.request.url.params["per_page"] == "50"
 
 
 @respx.mock

@@ -457,20 +457,30 @@ def test_discover_falls_back_to_token_match_when_semantic_matcher_unavailable():
 
 # --- Sprint 20H: the search result window is a configurable tunable, not
 # a hardcoded module constant. See docs/SILENT_FAILURE_AUDIT.md finding #2.
+#
+# Sprint 34 note: these two tests used to configure this via
+# `max_search_results`, which drove the search call's `per_page` directly.
+# That field is now inert for this purpose -- discover()'s pagination
+# reads `search_page_size` instead (see GitHubIntelligenceConfig and
+# github_connector.py's own module docstring for why "results per page"
+# and "total candidates collected across many pages" became separate
+# knobs once pagination existed). The behavior these tests protect
+# (per_page is a real, configurable value, not a hardcoded number) is
+# unchanged -- only which field configures it.
 
 
 @respx.mock
-def test_discover_honors_a_configured_max_search_results_smaller_than_default():
+def test_discover_honors_a_configured_search_page_size_smaller_than_default():
     """GitHub's Search Users API can return thousands of matches (e.g.
     total_count 1729 for "golang", live-confirmed) -- this test proves
-    the connector actually passes GitHubIntelligenceConfig.max_search_results
+    the connector actually passes GitHubIntelligenceConfig.search_page_size
     through to the search call's `per_page`, rather than always using the
-    old hardcoded value of 10."""
+    default value of 100."""
     search_route = respx.get("https://api.github.com/search/users").mock(
         return_value=httpx.Response(200, json={"items": []})
     )
 
-    config = GitHubIntelligenceConfig(max_search_results=3)
+    config = GitHubIntelligenceConfig(search_page_size=3)
     connector = GitHubDiscoveryConnector(_configured_store(), intelligence_config=config)
     connector.discover(CanonicalJobRequirement(role="Backend Engineer", skills=["Python"]))
 
@@ -478,18 +488,18 @@ def test_discover_honors_a_configured_max_search_results_smaller_than_default():
 
 
 @respx.mock
-def test_discover_honors_a_configured_max_search_results_larger_than_default():
+def test_discover_honors_a_configured_search_page_size_larger_than_default():
     """The inverse case -- proves the cap can be raised, not just lowered,
     confirming this is a real tunable and not a disguised hardcoded max."""
     search_route = respx.get("https://api.github.com/search/users").mock(
         return_value=httpx.Response(200, json={"items": []})
     )
 
-    config = GitHubIntelligenceConfig(max_search_results=50)
+    config = GitHubIntelligenceConfig(search_page_size=150)
     connector = GitHubDiscoveryConnector(_configured_store(), intelligence_config=config)
     connector.discover(CanonicalJobRequirement(role="Backend Engineer", skills=["Python"]))
 
-    assert search_route.calls.last.request.url.params["per_page"] == "50"
+    assert search_route.calls.last.request.url.params["per_page"] == "150"
 
 
 # --- Sprint 32: runtime 401 marks the credential store invalid --------------
@@ -529,3 +539,248 @@ def test_discover_does_not_mark_error_on_non_401_search_failure():
     # A malformed query (422) isn't a token problem -- shouldn't be
     # reported as one.
     assert store.get_status()["status"] != "invalid"
+
+
+# --- Sprint 34: multi-page GitHub discovery + raw candidate expansion -------
+#
+# These tests deliberately mock every profile/repos/orgs lookup to FAIL
+# (404) so the enrichment pipeline (already covered exhaustively above)
+# never runs -- each test below is isolated to proving exactly one thing
+# about the NEW fetch/dedup/stop-condition stage in
+# GitHubDiscoveryConnector._fetch_raw_candidates(), verified via
+# `connector.last_discovery_stats` (the same dict DiscoveryOrchestrator
+# reads and folds into the persisted Search Session) and via respx's own
+# call count/history.
+
+
+def _stats_only_config(**overrides) -> GitHubIntelligenceConfig:
+    return GitHubIntelligenceConfig(**overrides)
+
+
+@respx.mock
+def test_discover_fetches_multiple_pages_until_a_short_page_signals_the_end():
+    """page 1 and 2 come back full (== page_size items) so pagination must
+    continue; page 3 comes back with FEWER than page_size items, which is
+    GitHub's own native signal that this was the last page."""
+    route = respx.get("https://api.github.com/search/users")
+    route.side_effect = [
+        httpx.Response(200, json={"items": [{"id": 1, "login": "u1"}, {"id": 2, "login": "u2"}]}),
+        httpx.Response(200, json={"items": [{"id": 3, "login": "u3"}, {"id": 4, "login": "u4"}]}),
+        httpx.Response(200, json={"items": [{"id": 5, "login": "u5"}]}),
+    ]
+    respx.get(url__regex=r"https://api\.github\.com/users/.*").mock(return_value=httpx.Response(404))
+
+    config = _stats_only_config(search_page_size=2, max_search_pages=5, max_raw_candidates=100)
+    connector = GitHubDiscoveryConnector(_configured_store(), intelligence_config=config)
+    connector.discover(CanonicalJobRequirement(role="Backend Engineer", skills=[]))
+
+    assert route.call_count == 3
+    stats = connector.last_discovery_stats
+    assert stats["github_pages_fetched"] == 3
+    assert stats["raw_candidates_found"] == 5
+    assert stats["raw_candidates_after_dedup"] == 5
+    assert stats["discovery_stop_reason"] == "no_more_results"
+
+
+@respx.mock
+def test_discover_deduplicates_candidates_seen_on_more_than_one_page():
+    """User id 2 appears on both page 1 and page 2 (GitHub's Search Users
+    results can genuinely shift between page fetches) -- it must only be
+    counted/enriched once, keyed by GitHub's own immutable id."""
+    route = respx.get("https://api.github.com/search/users")
+    route.side_effect = [
+        httpx.Response(200, json={"items": [{"id": 1, "login": "u1"}, {"id": 2, "login": "u2"}]}),
+        httpx.Response(200, json={"items": [{"id": 2, "login": "u2"}, {"id": 3, "login": "u3"}]}),
+    ]
+    respx.get(url__regex=r"https://api\.github\.com/users/.*").mock(return_value=httpx.Response(404))
+
+    # max_search_pages=2 stops pagination after both full pages, rather
+    # than relying on a third (empty) page -- isolates dedup from the
+    # "GitHub returned no more results" stop condition tested elsewhere.
+    config = _stats_only_config(search_page_size=2, max_search_pages=2, max_raw_candidates=100)
+    connector = GitHubDiscoveryConnector(_configured_store(), intelligence_config=config)
+    connector.discover(CanonicalJobRequirement(role="Backend Engineer", skills=[]))
+
+    stats = connector.last_discovery_stats
+    assert stats["github_pages_fetched"] == 2
+    assert stats["raw_candidates_found"] == 4  # 2 + 2, BEFORE dedup
+    assert stats["raw_candidates_after_dedup"] == 3  # ids {1, 2, 3}
+    assert stats["discovery_stop_reason"] == "max_pages_reached"
+
+
+@respx.mock
+def test_discover_dedupes_by_login_when_id_is_absent():
+    """Some of this test file's own fixtures (and, per GitHub's docs, some
+    responses) omit `id` -- the dedup key must fall back to `login` rather
+    than treating every id-less item as a new, distinct identity."""
+    route = respx.get("https://api.github.com/search/users")
+    route.side_effect = [
+        httpx.Response(200, json={"items": [{"login": "octocat"}, {"login": "u2"}]}),
+        httpx.Response(200, json={"items": [{"login": "octocat"}]}),
+    ]
+    respx.get(url__regex=r"https://api\.github\.com/users/.*").mock(return_value=httpx.Response(404))
+
+    config = _stats_only_config(search_page_size=2, max_search_pages=2, max_raw_candidates=100)
+    connector = GitHubDiscoveryConnector(_configured_store(), intelligence_config=config)
+    connector.discover(CanonicalJobRequirement(role="Backend Engineer", skills=[]))
+
+    stats = connector.last_discovery_stats
+    assert stats["raw_candidates_found"] == 3
+    assert stats["raw_candidates_after_dedup"] == 2  # "octocat" counted once
+
+
+@respx.mock
+def test_discover_stops_immediately_on_an_empty_first_page():
+    route = respx.get("https://api.github.com/search/users").mock(
+        return_value=httpx.Response(200, json={"items": []})
+    )
+
+    config = _stats_only_config(search_page_size=10, max_search_pages=5, max_raw_candidates=100)
+    connector = GitHubDiscoveryConnector(_configured_store(), intelligence_config=config)
+    results = connector.discover(CanonicalJobRequirement(role="Backend Engineer", skills=[]))
+
+    assert results == []
+    assert route.call_count == 1
+    stats = connector.last_discovery_stats
+    assert stats["github_pages_fetched"] == 1
+    assert stats["raw_candidates_found"] == 0
+    assert stats["discovery_stop_reason"] == "no_more_results"
+
+
+@respx.mock
+def test_discover_stops_at_the_configured_max_page_limit_even_with_more_available():
+    """Every page comes back completely full (== page_size), so GitHub
+    could keep going -- but GITHUB_MAX_SEARCH_PAGES caps the fetch."""
+    route = respx.get("https://api.github.com/search/users")
+    route.side_effect = [
+        httpx.Response(200, json={"items": [{"id": 1, "login": "u1"}, {"id": 2, "login": "u2"}]}),
+        httpx.Response(200, json={"items": [{"id": 3, "login": "u3"}, {"id": 4, "login": "u4"}]}),
+    ]
+    respx.get(url__regex=r"https://api\.github\.com/users/.*").mock(return_value=httpx.Response(404))
+
+    config = _stats_only_config(search_page_size=2, max_search_pages=2, max_raw_candidates=1000)
+    connector = GitHubDiscoveryConnector(_configured_store(), intelligence_config=config)
+    connector.discover(CanonicalJobRequirement(role="Backend Engineer", skills=[]))
+
+    # Only 2 requests were ever made -- pagination did not continue to a
+    # 3rd page even though every page so far was completely full.
+    assert route.call_count == 2
+    stats = connector.last_discovery_stats
+    assert stats["github_pages_fetched"] == 2
+    assert stats["discovery_stop_reason"] == "max_pages_reached"
+
+
+@respx.mock
+def test_discover_stops_at_the_configured_max_raw_candidate_limit():
+    """A single page returns more unique candidates than
+    GITHUB_MAX_RAW_CANDIDATES allows -- collection must stop mid-page
+    once the cap is hit, without requesting a second page."""
+    route = respx.get("https://api.github.com/search/users").mock(
+        return_value=httpx.Response(
+            200,
+            json={"items": [{"id": 1, "login": "u1"}, {"id": 2, "login": "u2"}, {"id": 3, "login": "u3"}]},
+        )
+    )
+    respx.get(url__regex=r"https://api\.github\.com/users/.*").mock(return_value=httpx.Response(404))
+
+    config = _stats_only_config(search_page_size=3, max_search_pages=5, max_raw_candidates=2)
+    connector = GitHubDiscoveryConnector(_configured_store(), intelligence_config=config)
+    connector.discover(CanonicalJobRequirement(role="Backend Engineer", skills=[]))
+
+    assert route.call_count == 1
+    stats = connector.last_discovery_stats
+    assert stats["raw_candidates_after_dedup"] == 2
+    assert stats["discovery_stop_reason"] == "max_raw_candidates_reached"
+
+
+@respx.mock
+def test_discover_reports_rate_limited_stop_reason_when_search_hits_the_limit_twice():
+    """GitHubClient already retries a primary-rate-limit 403 once
+    internally -- this proves that when the RETRY also comes back
+    rate-limited, discover() reports `rate_limited` rather than treating
+    it as a generic search error, and does not attempt a second page."""
+    route = respx.get("https://api.github.com/search/users")
+    rate_limited_response = httpx.Response(
+        403,
+        headers={"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": "0"},
+        text="rate limited",
+    )
+    route.side_effect = [rate_limited_response, rate_limited_response]
+
+    config = _stats_only_config(search_page_size=10, max_search_pages=5, max_raw_candidates=100)
+    connector = GitHubDiscoveryConnector(_configured_store(), intelligence_config=config)
+    results = connector.discover(CanonicalJobRequirement(role="Backend Engineer", skills=[]))
+
+    assert results == []
+    # 2 calls total: the original request plus GitHubClient's own one
+    # internal retry -- discover() does not attempt a second PAGE.
+    assert route.call_count == 2
+    stats = connector.last_discovery_stats
+    assert stats["github_pages_fetched"] == 0
+    assert stats["discovery_stop_reason"] == "rate_limited"
+
+
+def test_discover_reports_connector_unavailable_when_not_configured():
+    """No GitHub PAT configured at all -- is_available() is False, so
+    discover() must report this via last_discovery_stats too (not just
+    return []), so a Search Session persists WHY GitHub contributed
+    nothing, rather than looking identical to "GitHub found zero
+    matches"."""
+    connector = GitHubDiscoveryConnector(GitHubConfigStore())
+    results = connector.discover(CanonicalJobRequirement(role="Backend Engineer", skills=[]))
+
+    assert results == []
+    stats = connector.last_discovery_stats
+    assert stats["github_pages_fetched"] == 0
+    assert stats["raw_candidates_found"] == 0
+    assert stats["discovery_stop_reason"] == "connector_unavailable"
+
+
+@respx.mock
+def test_discover_reports_connector_unavailable_stop_reason_on_401_mid_run():
+    """A 401 during search (token revoked after being configured) is a
+    DIFFERENT code path from "never configured" above, but Sprint 34's
+    stats should classify it under the same `connector_unavailable`
+    vocabulary the sprint brief defines, alongside marking the credential
+    store invalid (Sprint 32 behavior, unchanged)."""
+    respx.get("https://api.github.com/search/users").mock(
+        return_value=httpx.Response(401, json={"message": "Bad credentials"})
+    )
+
+    connector = GitHubDiscoveryConnector(_configured_store())
+    results = connector.discover(CanonicalJobRequirement(role="Backend Engineer", skills=[]))
+
+    assert results == []
+    stats = connector.last_discovery_stats
+    assert stats["discovery_stop_reason"] == "connector_unavailable"
+
+
+@respx.mock
+def test_discover_preserves_deterministic_page_order_in_final_results():
+    """Candidates from page 1 must appear before candidates from page 2
+    in the final results list -- ranking downstream depends on a stable,
+    reproducible candidate ordering, not fetch-order jitter."""
+    route = respx.get("https://api.github.com/search/users")
+    route.side_effect = [
+        httpx.Response(200, json={"items": [{"id": 1, "login": "first-dev"}]}),
+        httpx.Response(200, json={"items": [{"id": 2, "login": "second-dev"}]}),
+    ]
+    for login, display_name in (("first-dev", "First Developer"), ("second-dev", "Second Developer")):
+        respx.get(f"https://api.github.com/users/{login}").mock(
+            return_value=httpx.Response(200, json={"login": login, "name": display_name})
+        )
+        respx.get(f"https://api.github.com/users/{login}/repos").mock(return_value=httpx.Response(200, json=[]))
+        respx.get(f"https://api.github.com/users/{login}/orgs").mock(return_value=httpx.Response(200, json=[]))
+
+    # search_page_size=1 forces exactly one candidate per page, so page
+    # order is unambiguous from the mocked responses above. role="Developer"
+    # with skills=[] tokenizes to an EMPTY requirement-token set (generic
+    # role noise word, stripped -- see _ROLE_NOISE_WORDS), which skips the
+    # relevance filter entirely -- this test is about ordering, not about
+    # relevance matching, so both candidates (with empty repo lists) must
+    # pass through untouched.
+    config = _stats_only_config(search_page_size=1, max_search_pages=2, max_raw_candidates=100)
+    connector = GitHubDiscoveryConnector(_configured_store(), intelligence_config=config)
+    results = connector.discover(CanonicalJobRequirement(role="Developer", skills=[]))
+
+    assert [r.name for r in results] == ["First Developer", "Second Developer"]

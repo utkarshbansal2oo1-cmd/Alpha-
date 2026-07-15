@@ -218,12 +218,21 @@ class DiscoveryOrchestrator:
                     merged += 1
 
             total_imported += imported
+            # Sprint 34: a connector MAY expose a `last_discovery_stats`
+            # dict (e.g. GitHubDiscoveryConnector, after a multi-page
+            # fetch) with keys matching ConnectorRunResult's own optional
+            # discovery-stat fields exactly. Duck-typed via getattr rather
+            # than added to the DiscoveryConnector interface, so every
+            # other connector (Greenhouse, the Sprint 18 stubs) is
+            # completely untouched and this stays purely additive.
+            discovery_stats = getattr(connector, "last_discovery_stats", None) or {}
             connector_results.append(
                 ConnectorRunResult(
                     source_name=connector.name,
                     candidates_found=len(found),
                     candidates_imported=imported,
                     candidates_merged=merged,
+                    **discovery_stats,
                 )
             )
             detail = f"{imported} new, {merged} matched existing records" if found else "no matching candidates"

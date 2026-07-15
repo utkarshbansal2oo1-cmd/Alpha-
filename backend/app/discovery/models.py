@@ -38,6 +38,22 @@ class ConnectorRunResult(BaseModel):
     candidates_merged: int = 0
     error: str | None = None
 
+    # Sprint 34: multi-page discovery statistics -- optional/None for every
+    # connector that doesn't expose them (i.e. everything except GitHub
+    # today), so this is purely additive and every existing
+    # ConnectorRunResult construction anywhere in the codebase is
+    # unaffected. Populated by DiscoveryOrchestrator.run() reading a
+    # connector's own `last_discovery_stats` attribute (duck-typed, not a
+    # required part of the DiscoveryConnector interface) right after
+    # calling discover(). Because DiscoveryRun (which embeds this model)
+    # is stored verbatim into Sprint 33's SearchSession.session_data, these
+    # fields are persisted into the Search Session with no changes needed
+    # to app/search_sessions/ or app/models/search_session.py at all.
+    github_pages_fetched: int | None = None
+    raw_candidates_found: int | None = None
+    raw_candidates_after_dedup: int | None = None
+    discovery_stop_reason: str | None = None
+
 
 class DiscoveryStage(BaseModel):
     """One step of the discovery process, in the order it happened --

@@ -10,11 +10,22 @@ appear in the query, but their meanings are close in embedding space.
 
 No predefined skill/role list is involved anywhere in this module. The
 only "knowledge" here is a general-purpose embedding model (Gemini's
-text-embedding-004, via the same `google-genai` SDK and
+gemini-embedding-001, via the same `google-genai` SDK and
 `settings.GEMINI_API_KEY` already used by
 app/query_understanding/gemini_client.py) -- it was never trained on, or
 told about, this product's specific skills or roles. It just maps
 arbitrary text to a point in semantic space, for arbitrary text.
+
+Sprint 37 fix: this previously called `text-embedding-004`, which Google
+deprecated and retired server-side -- every live call was failing with a
+404 ("models/text-embedding-004 is not found for API version v1beta"),
+silently degrading every GitHub search to literal-token matching only
+(see the fallback behavior below) with no visible error to the recruiter,
+just a quieter/less precise result set. `gemini-embedding-001` is the
+current supported replacement (3072-dimension vectors, vs. 768 for the
+old model) -- cosine_similarity() below works unchanged for any vector
+length as long as both sides come from the same model, which they always
+do here.
 
 Every comparison is still evidence-based: the "candidate" side of every
 similarity check is real text GitHub returned for that candidate (repo
@@ -49,7 +60,7 @@ logger = logging.getLogger(__name__)
 # and the live-tunable follow-up this implies.
 DEFAULT_SIMILARITY_THRESHOLD = 0.5
 
-_EMBEDDING_MODEL = "text-embedding-004"
+_EMBEDDING_MODEL = "gemini-embedding-001"
 
 
 class EmbeddingUnavailableError(Exception):

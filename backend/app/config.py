@@ -1,6 +1,6 @@
 """Centralized settings, loaded from environment / .env.
 
-Nothing in the rest of the app should read os.environ directly — import
+Nothing in the rest of the app should read os.environ directly -- import
 `settings` from here instead, so every value has one source of truth.
 """
 from __future__ import annotations
@@ -34,6 +34,20 @@ class Settings(BaseSettings):
     @property
     def cors_origins_list(self) -> list[str]:
         return [o.strip() for o in self.CORS_ORIGINS.split(",") if o.strip()]
+
+    # Sprint 37 fix: Vite's dev server hops to the next free port (5174,
+    # 5175, 5176, ...) whenever an earlier port is still held by a
+    # previous `npm run dev` process the developer forgot to close --
+    # extremely common in local dev, and each hop silently broke CORS
+    # again since cors_origins_list only ever had a few hardcoded ports.
+    # This regex matches ANY http://localhost:<port> or
+    # http://127.0.0.1:<port> origin, in addition to whatever's in
+    # cors_origins_list (which still covers real deployed origins like
+    # the Vercel site) -- so local dev is never again blocked just
+    # because Vite happened to land on an unlisted port. Only applied
+    # when ENV=="development" (see main.py) -- a real deployment must
+    # still rely on explicit CORS_ORIGINS, never this wildcard-ish regex.
+    LOCALHOST_CORS_REGEX: str = r"^https?://(localhost|127\.0\.0\.1):\d+$"
 
     # --- AI ---
     GEMINI_API_KEY: str = ""

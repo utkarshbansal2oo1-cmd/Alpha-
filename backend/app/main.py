@@ -66,6 +66,13 @@ app = FastAPI(title=settings.APP_NAME, version="0.1.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins_list,
+    # Sprint 37 fix: in development, also allow ANY http://localhost:<port>
+    # or http://127.0.0.1:<port> origin -- Vite hops to the next free port
+    # whenever an earlier one is still held by a forgotten `npm run dev`
+    # process, and that repeatedly broke CORS since cors_origins_list only
+    # ever listed a few hardcoded ports. Never applied outside development
+    # -- a real deployment must keep relying on explicit CORS_ORIGINS.
+    allow_origin_regex=settings.LOCALHOST_CORS_REGEX if settings.ENV == "development" else None,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

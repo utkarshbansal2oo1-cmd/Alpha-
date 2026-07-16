@@ -8,11 +8,45 @@ import { Search, ShieldCheck, SlidersHorizontal, Radio } from "lucide-react";
 // the real DiscoveryRun (discovery.connector_results, discovery.decision)
 // already in the /api/search/smart response; the only invented text is
 // the generic, always-applicable suggestion copy at the bottom.
-export default function EmptyState({ discovery, query }) {
+//
+// Sprint 38 fix: `discovery.decision.reason` is the Discovery Decision
+// Engine's reasoning for *triggering* discovery in the first place --
+// computed BEFORE any connector ran, against whatever the internal
+// candidate pool looked like at that moment. This component used to show
+// that reason as if it explained the empty page the recruiter is looking
+// at -- misleading whenever discovery actually ran, found real
+// candidates (visible right above in "per-connector results" as N found/
+// qualified), and THIS page is still empty for a completely different,
+// LATER reason: none of those candidates cleared the adaptive
+// relevance_threshold applied to page 1 (see discovery_search.py's
+// smart_search()). Real-world example that surfaced this: a GitHub
+// search returned 114 enriched profiles, but the query asked for
+// "10 years experience in Delhi" -- signals GitHub's API cannot verify
+// for any candidate -- so every one of them scored low on those specific
+// dimensions and none reached the bar, even though their skills matched
+// fine. The two reasons are now shown as what they are: the discovery
+// engine's own decision log (secondary), and, when candidates truly were
+// found but held back by the score threshold, a primary explanation of
+// exactly that, plus a direct action to see them anyway.
+export default function EmptyState({
+  discovery,
+  query,
+  relevanceThreshold,
+  weakMatchCount,
+  totalAllCandidates,
+  onShowWeakMatches,
+  showingWeakMatches,
+}) {
   const connectorResults = discovery?.connector_results || [];
   const attempted = connectorResults.filter((c) => c.attempted);
   const evaluated = connectorResults.reduce((sum, c) => sum + (c.candidates_found || 0), 0);
   const decisionReason = discovery?.decision?.reason;
+
+  // True whenever candidates were genuinely found/scored (post-discovery)
+  // but every one of them fell below relevance_threshold for this page --
+  // the real, current-state explanation, distinct from the pre-discovery
+  // decision log above.
+  const heldBackByThreshold = (totalAllCandidates || 0) > 0 && (weakMatchCount || 0) > 0;
 
   return (
     <motion.div
@@ -53,7 +87,9 @@ export default function EmptyState({ discovery, query }) {
             Confidence threshold
           </p>
           <p className="mt-1 text-xl font-semibold text-ink-100">
-            {discovery?.decision?.min_confidence_threshold != null
+            {relevanceThreshold != null
+              ? Math.round(relevanceThreshold)
+              : discovery?.decision?.min_confidence_threshold != null
               ? Math.round(discovery.decision.min_confidence_threshold)
               : "—"}
           </p>
@@ -82,8 +118,31 @@ export default function EmptyState({ discovery, query }) {
         </div>
       )}
 
-      {decisionReason && (
-        <p className="mt-6 rounded-lg bg-white/[0.03] px-4 py-3 text-sm text-ink-500">{decisionReason}</p>
+      {heldBackByThreshold ? (
+        <div className="mt-6 rounded-lg bg-white/[0.03] px-4 py-3">
+          <p className="text-sm text-ink-300">
+            {totalAllCandidates} candidate{totalAllCandidates === 1 ? "" : "s"} were found and scored, but{" "}
+            {weakMatchCount} of them scored below the {relevanceThreshold != null ? Math.round(relevanceThreshold) : ""}%
+            confidence bar for this search -- often because the query asks for something a data source can't verify
+            (e.g. exact years of experience or a specific city), not because the skills don't match.
+          </p>
+          {onShowWeakMatches && (
+            <button
+              onClick={onShowWeakMatches}
+              disabled={showingWeakMatches}
+              className="mt-3 rounded-full border border-white/[0.08] bg-white/[0.04] px-4 py-1.5 text-xs font-medium text-ink-100 transition-colors hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {showingWeakMatches ? "Loading…" : `Show ${weakMatchCount} weaker match${weakMatchCount === 1 ? "" : "es"} anyway`}
+            </button>
+          )}
+        </div>
+      ) : (
+        decisionReason && (
+          <p className="mt-6 rounded-lg bg-white/[0.03] px-4 py-3 text-sm text-ink-500">
+            <span className="mr-1 text-xs uppercase tracking-wide text-ink-500/80">Why this search ran:</span>
+            {decisionReason}
+          </p>
+        )
       )}
 
       <div className="mt-6 border-t border-white/[0.06] pt-5">

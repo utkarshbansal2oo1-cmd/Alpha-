@@ -77,6 +77,23 @@ export default function App() {
       const data = await smartSearch(submittedQuery);
       setResponse(data);
       setPhase("discovering");
+
+      // Sprint 38 fix: `githubStatus` (the header pill) was fetched ONCE
+      // on page mount and never refreshed. GitHub's credential is held
+      // in-memory by default (CONNECTOR_CREDENTIALS_BACKEND=memory, no
+      // Postgres persistence configured) -- a backend restart silently
+      // disconnects it, but the pill kept showing the stale "connected"
+      // state from before the restart, contradicting THIS search's own,
+      // current discovery.connector_results entry for github (the real
+      // source of truth for whether it was actually usable just now).
+      // Reconciling the pill from every search's real result means it can
+      // never lag behind reality by more than one search.
+      const githubResult = (data?.discovery?.connector_results || []).find(
+        (c) => c.source_name?.toLowerCase() === "github"
+      );
+      if (githubResult && typeof githubResult.configured === "boolean") {
+        setGithubStatus((prev) => ({ ...prev, configured: githubResult.configured }));
+      }
     } catch (err) {
       setError(err instanceof SearchError ? err : new SearchError(String(err?.message || err)));
       setPhase("error");
@@ -95,7 +112,25 @@ export default function App() {
         // another smartSearch() call, which would re-run Query
         // Understanding/Search Planner/Discovery/Matching/Ranking and
         // could even start a brand-new, unrelated session.
-        const data = await getSearchSessionPage(response.session_id, targetPage, response.page_size);
+        //
+        // Sprint 38 bugfix: this used to omit includeWeakMatches, always
+        // defaulting to false. After clicking "Show anyway"
+        // (response.include_weak_matches becomes true, total_pages is
+        // recomputed against the FULL unfiltered pool), Next/Previous
+        // silently dropped back to the strict relevance_threshold filter
+        // -- which can have far fewer real pages -- so turning to a page
+        // number that only existed in the unfiltered view re-fetched a
+        // tiny (or the same) filtered slice instead, looking like
+        // pagination was stuck repeating the same candidates. Passing the
+        // CURRENT response's own include_weak_matches flag through keeps
+        // every subsequent page consistent with whichever view -- filtered
+        // or "show anyway" -- is actually on screen.
+        const data = await getSearchSessionPage(
+          response.session_id,
+          targetPage,
+          response.page_size,
+          response.include_weak_matches
+        );
         setResponse(data);
       } catch (err) {
         setPageError(err instanceof SearchError ? err : new SearchError(String(err?.message || err)));
@@ -105,6 +140,27 @@ export default function App() {
     },
     [response, pageLoading]
   );
+
+  // Sprint 38 (this fix): when a search's page is empty because every
+  // candidate scored below the adaptive relevance_threshold (NOT because
+  // no candidates were found -- see EmptyState's own logic), the recruiter
+  // can explicitly ask to see those weaker matches anyway, via the SAME
+  // session (no new Query Understanding/Discovery/Matching/Ranking run --
+  // identical contract to goToPage() above, just with the
+  // include_weak_matches filter lifted for this page load).
+  const showWeakMatches = useCallback(async () => {
+    if (!response || pageLoading) return;
+    setPageLoading(true);
+    setPageError(null);
+    try {
+      const data = await getSearchSessionPage(response.session_id, 1, response.page_size, true);
+      setResponse(data);
+    } catch (err) {
+      setPageError(err instanceof SearchError ? err : new SearchError(String(err?.message || err)));
+    } finally {
+      setPageLoading(false);
+    }
+  }, [response, pageLoading]);
 
   const reset = useCallback(() => {
     setPhase("idle");
@@ -275,6 +331,23 @@ export default function App() {
 
                   {response.total_count > 0 ? (
                     <>
+                      {response.weak_match_count > 0 && !response.include_weak_matches && (
+                        <div className="mb-6 flex items-center justify-between gap-3 rounded-xl border border-white/[0.06] bg-white/[0.03] px-4 py-3">
+                          <p className="text-xs text-ink-500">
+                            {response.weak_match_count} more candidate{response.weak_match_count === 1 ? "" : "s"} scored
+                            below the {Math.round(response.relevance_threshold)}% confidence bar and {response.weak_match_count === 1 ? "is" : "are"} hidden --
+                            often because a source (e.g. GitHub) can't verify something the query asked for, like exact
+                            years of experience or a specific city.
+                          </p>
+                          <button
+                            onClick={showWeakMatches}
+                            disabled={pageLoading}
+                            className="shrink-0 rounded-full border border-white/[0.08] bg-white/[0.04] px-3.5 py-1.5 text-xs font-medium text-ink-100 transition-colors hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            {pageLoading ? "Loading…" : "Show anyway"}
+                          </button>
+                        </div>
+                      )}
                       <CandidateGrid
                         candidates={response.candidates}
                         rankings={response.rankings}
@@ -309,7 +382,15 @@ export default function App() {
                       )}
                     </>
                   ) : (
-                    <EmptyState discovery={response.discovery} query={query} />
+                    <EmptyState
+                      discovery={response.discovery}
+                      query={query}
+                      relevanceThreshold={response.relevance_threshold}
+                      weakMatchCount={response.weak_match_count}
+                      totalAllCandidates={response.total_all_candidates}
+                      onShowWeakMatches={response.weak_match_count > 0 ? showWeakMatches : null}
+                      showingWeakMatches={pageLoading}
+                    />
                   )}
                 </motion.div>
               )}

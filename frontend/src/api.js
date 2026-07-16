@@ -86,12 +86,20 @@ export async function smartSearch(query, page = 1, pageSize = 20) {
  *
  * Sprint 33: this is what "Next page" / "Load More" should call once a
  * session_id exists -- never smartSearch() again for the same search.
+ *
+ * Sprint 38: `includeWeakMatches`, when true, lifts the relevance_threshold
+ * filter for this page load -- passed straight through as the backend's own
+ * `include_weak_matches` query param (see discovery_search.py's
+ * get_search_session_page()). Used by the "Show N weaker matches anyway"
+ * action in EmptyState.jsx.
  */
-export async function getSearchSessionPage(sessionId, page, pageSize = 20) {
+export async function getSearchSessionPage(sessionId, page, pageSize = 20, includeWeakMatches = false) {
   let res;
   try {
+    const params = new URLSearchParams({ page: String(page), page_size: String(pageSize) });
+    if (includeWeakMatches) params.set("include_weak_matches", "true");
     res = await fetch(
-      `${API_ROOT}/api/search/session/${encodeURIComponent(sessionId)}?page=${page}&page_size=${pageSize}`
+      `${API_ROOT}/api/search/session/${encodeURIComponent(sessionId)}?${params.toString()}`
     );
   } catch {
     throw new SearchError(

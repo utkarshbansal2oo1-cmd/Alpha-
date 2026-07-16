@@ -55,6 +55,15 @@ export default function CandidateGrid({ candidates, rankings, sourceGroups }) {
 // candidate grid. `is_fallback` gets a subdued "Suggested" pill instead
 // of hiding or de-emphasizing the whole section -- recruiters should
 // still see and be able to open these candidates, just clearly labeled.
+//
+// Sprint 38 fix: `qualified_count` (from discovery_search.py) counts how
+// many of this source's candidates made it into the full ranked SESSION
+// pool -- NOT how many cleared the relevance_threshold for this page.
+// A seed-fallback group can show "9 searched, 9 qualified" while only 1
+// of those 9 actually scored high enough to appear below (candidate_count).
+// The label now says "in pool" instead of "qualified" to avoid implying
+// all of them passed the confidence bar, and calls out candidate_count
+// explicitly whenever it's smaller.
 function SourceGroupSection({ group, matchById, onOpen }) {
   const Icon = getIconForKey(group.icon);
 
@@ -73,7 +82,10 @@ function SourceGroupSection({ group, matchById, onOpen }) {
         </div>
         {(group.searched_count > 0 || group.qualified_count > 0) && (
           <p className="text-[11px] text-ink-500">
-            {group.searched_count} searched &middot; {group.qualified_count} qualified
+            {group.searched_count} searched &middot; {group.qualified_count} in pool
+            {group.qualified_count > group.candidate_count && (
+              <span> &middot; {group.candidate_count} shown here</span>
+            )}
           </p>
         )}
       </header>

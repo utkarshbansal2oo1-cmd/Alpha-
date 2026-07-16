@@ -118,12 +118,46 @@ class DiscoveryOrchestrator:
         # per translated search expression, against a synthetic
         # requirement carrying that expression as its role, then merge
         # and deduplicate before returning.
+        #
+        # This-sprint fix: a single recruiter query like "Zig systems
+        # programmer" can translate into 8+ separate GitHub search
+        # expressions (see query_translation/). Each discover() call is
+        # entirely I/O-bound (GitHub REST calls + Gemini embedding calls,
+        # no shared mutable state -- each call builds its own GitHubClient
+        # instance), so running them sequentially made total wall-clock
+        # time the SUM of every sub-query (live-observed: 547s / ~9min for
+        # 8 sub-queries on one search). Running them concurrently on a
+        # thread pool means wall-clock time is closer to the SLOWEST
+        # single sub-query instead -- same total API calls, same results,
+        # much less waiting. Bounded to avoid hammering GitHub with more
+        # simultaneous requests than there are sub-queries anyway.
+        #
+        # Known limitation: GitHubDiscoveryConnector.discover() also
+        # writes self.last_discovery_stats as a side effect for the
+        # orchestrator's logging/ConnectorRunResult -- with concurrent
+        # calls on the same connector instance, whichever call finishes
+        # last "wins" that dict, same as it already only ever reflected
+        # the last of several sequential sub-queries before this change.
+        # Not aggregated across sub-queries either way; harmless for its
+        # only consumer (diagnostic logging), not correctness.
+        from concurrent.futures import ThreadPoolExecutor
+
         from app.discovery.query_translation.dedup import deduplicate_import_requests
 
+        query_texts = connector_query.connector_queries
         all_found = []
-        for query_text in connector_query.connector_queries:
-            synthetic_requirement = CanonicalJobRequirement(role=query_text, skills=[])
-            all_found.extend(connector.discover(synthetic_requirement))
+        if len(query_texts) <= 1:
+            for query_text in query_texts:
+                synthetic_requirement = CanonicalJobRequirement(role=query_text, skills=[])
+                all_found.extend(connector.discover(synthetic_requirement))
+        else:
+            with ThreadPoolExecutor(max_workers=min(len(query_texts), 8)) as pool:
+                futures = [
+                    pool.submit(connector.discover, CanonicalJobRequirement(role=query_text, skills=[]))
+                    for query_text in query_texts
+                ]
+                for future in futures:
+                    all_found.extend(future.result())
 
         deduped, duplicate_count = deduplicate_import_requests(all_found)
         return deduped, duplicate_count, connector_query.connector_queries

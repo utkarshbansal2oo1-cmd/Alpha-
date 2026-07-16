@@ -31,6 +31,27 @@ from app.search_planner.models import CanonicalJobRequirement, SearchPlan
 _NEUTRAL = 50.0
 _EXPERIENCE_PATTERN = re.compile(r"(\d+)\s*\+?\s*years?", re.IGNORECASE)
 
+# This-sprint fix: matches a trailing "... in <place>" / "based in
+# <place>" / "located in <place>" / "near <place>" phrase, the common way
+# a recruiter names a required location in free text (e.g. "software
+# engineer with 5+ years in bengaluru"). Anchored to the end of the query
+# so it doesn't misfire on an unrelated mid-sentence "in" (e.g. "engineer
+# in fintech"). See _score_location()'s docstring for why this exists.
+_LOCATION_PATTERN = re.compile(
+    r"(?:\bin\b|\bbased in\b|\blocated in\b|\bnear\b)\s+([a-zA-Z][a-zA-Z\s,.'-]{1,40})$",
+    re.IGNORECASE,
+)
+
+
+def _extract_location_hint(raw_query: str | None) -> str | None:
+    if not raw_query:
+        return None
+    match = _LOCATION_PATTERN.search(raw_query.strip())
+    if not match:
+        return None
+    hint = match.group(1).strip().rstrip(".,")
+    return hint or None
+
 
 def _tokens(*values: str | None) -> set[str]:
     out: set[str] = set()
@@ -109,11 +130,37 @@ def _score_experience(candidate: Candidate, raw_query: str | None) -> tuple[floa
 
 
 def _score_location(candidate: Candidate, raw_query: str | None) -> tuple[float, bool, bool]:
-    if not raw_query or not candidate.location:
+    """This-sprint fix: previously, whenever the candidate's location did
+    NOT match the query, this returned `(_NEUTRAL, False, False)` --
+    `applicable=False` -- which excludes the dimension from the overall
+    weighted average entirely, identical to "the query never mentioned a
+    location at all". That meant a real, known location MISMATCH (e.g. a
+    Bengaluru-only search matching a candidate based in Toluca, Mexico)
+    was silently invisible to the overall score -- it neither helped nor
+    hurt, so an off-location candidate could still rank #1 purely on
+    role/skill/keyword signals. Live-observed: searching "software
+    engineer with 5+ years in bengaluru" surfaced candidates from Mexico,
+    Brazil, and the US ranked alongside (sometimes above) genuine
+    Bengaluru-based candidates.
+
+    Now: `_extract_location_hint()` first checks whether the query even
+    NAMES a location (e.g. "... in bengaluru") -- if it doesn't, this
+    dimension stays exactly as before (neutral, inapplicable, never
+    penalizes a candidate for data the recruiter never asked to filter
+    on). But if the query DOES name a location and this candidate's real,
+    known location doesn't match it, that is now a genuine, applicable
+    signal -- scored low (10.0) so it pulls the weighted overall score
+    down instead of vanishing from it, while still stopping short of an
+    absolute veto (0.0) since substring matching on free-text city names
+    is an imperfect heuristic, not a certainty)."""
+    hint = _extract_location_hint(raw_query)
+    if not hint or not candidate.location:
         return _NEUTRAL, False, False
-    if candidate.location.strip().lower() in raw_query.strip().lower():
+    hint_lower = hint.strip().lower()
+    location_lower = candidate.location.strip().lower()
+    if hint_lower in location_lower or location_lower in hint_lower:
         return 100.0, True, True
-    return _NEUTRAL, False, False
+    return 10.0, False, True
 
 
 def _score_health(candidate: Candidate) -> tuple[float, bool, bool]:

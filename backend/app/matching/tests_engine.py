@@ -93,6 +93,43 @@ def test_location_heuristic_matches_substring_in_raw_query():
     assert "location" in result.matched_fields
 
 
+def test_location_mismatch_is_applicable_and_pulls_score_down():
+    # This-sprint fix: previously a location MISMATCH was marked
+    # inapplicable (excluded from the overall average entirely), which is
+    # exactly what let an off-location candidate rank as if location had
+    # never been asked about at all. It must now count against the
+    # overall score, not vanish from it.
+    engine = MatchingEngine()
+    requirement = CanonicalJobRequirement(role="Product Manager", skills=[])
+    plan = _plan([])
+    result = engine.score(
+        _candidate(location="Toluca, Mexico"),
+        requirement,
+        plan,
+        raw_query="Product Manager with 5+ years in bengaluru",
+    )
+    assert result.component_scores["location"] == 10.0
+    assert "location" not in result.matched_fields
+    assert "location" not in result.missing_fields
+
+
+def test_location_dimension_stays_neutral_when_query_names_no_location():
+    # No location language in the query at all -- must NOT penalize any
+    # candidate just because their location field doesn't happen to
+    # appear in the query text.
+    engine = MatchingEngine()
+    requirement = CanonicalJobRequirement(role="Product Manager", skills=[])
+    plan = _plan([])
+    result = engine.score(
+        _candidate(location="Toluca, Mexico"),
+        requirement,
+        plan,
+        raw_query="Product Manager with 5+ years experience",
+    )
+    assert result.component_scores["location"] == 50.0
+    assert "location" in result.missing_fields
+
+
 def test_weights_from_config_change_overall_score():
     requirement = CanonicalJobRequirement(role="Product Manager", skills=["Roadmapping"])
     plan = _plan(["Product Manager", "Roadmapping"])

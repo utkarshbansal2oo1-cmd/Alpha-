@@ -46,6 +46,8 @@ from __future__ import annotations
 
 import logging
 import math
+import threading
+import time
 
 from app.config import settings
 
@@ -61,6 +63,47 @@ logger = logging.getLogger(__name__)
 DEFAULT_SIMILARITY_THRESHOLD = 0.5
 
 _EMBEDDING_MODEL = "gemini-embedding-001"
+
+# This-sprint fix: the orchestrator now runs several GitHub sub-queries
+# concurrently (app/discovery/orchestrator.py), which previously-serial
+# embedding calls hit one at a time. Firing them all at once immediately
+# blew through Gemini's free-tier rate limit -- live-observed as repeated
+# "429 RESOURCE_EXHAUSTED" errors right after enabling that concurrency
+# fix. Google no longer publishes a fixed free-tier RPM number (it's
+# per-project, visible only at https://aistudio.google.com/rate-limit),
+# so rather than guess a number and still risk bursts, every embedding
+# call across every thread now passes through one shared, process-wide
+# throttle that enforces a minimum gap between calls. This does NOT
+# undo the orchestrator's concurrency win for the GitHub REST calls
+# (profile/repos/orgs/README) -- only the embedding calls specifically
+# are serialized to a safe rate; the GitHub API side is untouched and
+# still runs in parallel across sub-queries.
+_MIN_SECONDS_BETWEEN_EMBEDDING_CALLS = 1.1
+
+
+class _EmbeddingRateLimiter:
+    """Thread-safe leaky-bucket-of-one: blocks the calling thread until at
+    least `min_interval` seconds have passed since the last call anywhere
+    in the process. Deliberately simple (not a real token bucket) --
+    embedding calls are already latency-bound network calls, so a small
+    added wait per call is a rounding error next to a 429 that drops
+    matching to the literal-token fallback for the rest of a search."""
+
+    def __init__(self, min_interval: float):
+        self._min_interval = min_interval
+        self._lock = threading.Lock()
+        self._last_call_at: float = 0.0
+
+    def wait(self) -> None:
+        with self._lock:
+            now = time.monotonic()
+            elapsed = now - self._last_call_at
+            if elapsed < self._min_interval:
+                time.sleep(self._min_interval - elapsed)
+            self._last_call_at = time.monotonic()
+
+
+_embedding_rate_limiter = _EmbeddingRateLimiter(_MIN_SECONDS_BETWEEN_EMBEDDING_CALLS)
 
 
 class EmbeddingUnavailableError(Exception):
@@ -105,6 +148,7 @@ class GeminiEmbeddingClient(EmbeddingClient):
 
     def embed(self, text: str) -> list[float]:
         client = self._ensure_client()
+        _embedding_rate_limiter.wait()
         try:
             response = client.models.embed_content(model=self._model_name, contents=text)
         except Exception as exc:  # noqa: BLE001 -- any SDK/network failure means "unavailable", not "crash"
